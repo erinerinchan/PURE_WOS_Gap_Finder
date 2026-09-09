@@ -36,22 +36,14 @@
 
           <div class="year-range-panel">
             <div class="year-range-copy">
-              <h3>Shared year range</h3>
-              <p class="helper-text">Applies the same publication-year filter to both files before matching.</p>
+              <h3>Publication year filter</h3>
+              <p class="helper-text">Enter a single year like <strong>2020</strong> or a range like <strong>2020-2024</strong>. The same filter will be applied to both files automatically.</p>
             </div>
-            <div class="year-range-controls">
-              <label class="year-input">
-                <span>From</span>
-                <input id="yearRangeStart" type="number" inputmode="numeric" min="0" placeholder="2020" />
-              </label>
-              <label class="year-input">
-                <span>To</span>
-                <input id="yearRangeEnd" type="number" inputmode="numeric" min="0" placeholder="2024" />
-              </label>
-              <button id="applyYearRangeBtn" class="secondary-btn" type="button">Apply year range</button>
-              <button id="resetYearRangeBtn" class="secondary-btn" type="button">Reset</button>
-            </div>
-            <p id="yearRangeStatus" class="helper-text year-range-status"></p>
+            <label class="year-filter-field" for="yearFilterInput">
+              <span>Year or year range</span>
+              <input id="yearFilterInput" type="text" inputmode="numeric" placeholder="2020 or 2020-2024" />
+            </label>
+            <p id="yearFilterStatus" class="helper-text year-range-status"></p>
           </div>
 
           <div id="yearWarning" class="warning hidden"></div>

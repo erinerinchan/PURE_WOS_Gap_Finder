@@ -98,31 +98,24 @@ h1 {
   margin-bottom: 0;
 }
 
-.year-range-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: end;
-}
-
-.year-input {
+.year-filter-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 120px;
+  max-width: 420px;
 }
 
-.year-input span {
+.year-filter-field span {
   color: var(--muted);
   font-size: 0.85rem;
   font-weight: 600;
 }
 
-.year-input input {
+.year-filter-field input {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  min-width: 120px;
+  width: 100%;
 }
 
 .upload-box {
@@ -241,8 +234,7 @@ h1 {
 }
 
 .tab-btn,
-.primary-btn,
-.secondary-btn {
+.primary-btn {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 9px 12px;
@@ -261,15 +253,6 @@ h1 {
   background: var(--primary);
   color: #fff;
   border-color: var(--primary);
-}
-
-.secondary-btn {
-  background: #fff;
-}
-
-.secondary-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary-dark);
 }
 
 .search-box {
