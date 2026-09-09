@@ -34,12 +34,19 @@ const state = {
   titleThreshold: 95,
   wosMapping: {},
   pureMapping: {},
+  yearRangeDirty: false,
+  yearRangeMessage: '',
   yearWarning: ''
 };
 
 const elements = {
   wosFileInput: document.getElementById('wosFileInput'),
   pureFileInput: document.getElementById('pureFileInput'),
+  yearRangeStart: document.getElementById('yearRangeStart'),
+  yearRangeEnd: document.getElementById('yearRangeEnd'),
+  applyYearRangeBtn: document.getElementById('applyYearRangeBtn'),
+  resetYearRangeBtn: document.getElementById('resetYearRangeBtn'),
+  yearRangeStatus: document.getElementById('yearRangeStatus'),
   columnMapping: document.getElementById('columnMapping'),
   yearWarning: document.getElementById('yearWarning'),
   exportBtn: document.getElementById('exportBtn'),
@@ -105,6 +112,104 @@ function getAcceptedFileType(fileName) {
   if (name.endsWith('.csv')) return 'csv';
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) return 'xlsx';
   return 'unsupported';
+}
+
+function parseYearNumber(value) {
+  const match = String(value ?? '').match(/\b(\d{4})\b/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function getYearStats(rows) {
+  const years = rows
+    .map((row) => parseYearNumber(row.year))
+    .filter((year) => Number.isInteger(year));
+
+  if (!years.length) return null;
+
+  return {
+    min: Math.min(...years),
+    max: Math.max(...years),
+    years
+  };
+}
+
+function setYearRangeInputs(start, end) {
+  elements.yearRangeStart.value = start === null || start === undefined ? '' : String(start);
+  elements.yearRangeEnd.value = end === null || end === undefined ? '' : String(end);
+}
+
+function getSelectedYearRange() {
+  const start = parseYearNumber(elements.yearRangeStart.value);
+  const end = parseYearNumber(elements.yearRangeEnd.value);
+
+  if (start === null || end === null) {
+    return null;
+  }
+
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+function applyYearRangeFilter(rows, range) {
+  if (!range) return rows;
+
+  return rows.filter((row) => {
+    const year = parseYearNumber(row.year);
+    return year !== null && year >= range.start && year <= range.end;
+  });
+}
+
+function syncDefaultYearRange() {
+  if (state.yearRangeDirty) {
+    return;
+  }
+
+  const wosStats = getYearStats(state.wosRows);
+  const pureStats = getYearStats(state.pureRows);
+
+  if (!wosStats && !pureStats) {
+    setYearRangeInputs('', '');
+    state.yearRangeMessage = '';
+    elements.yearRangeStatus.textContent = '';
+    return;
+  }
+
+  const sourceStats = wosStats || pureStats;
+  let start = sourceStats.min;
+  let end = sourceStats.max;
+  let message = '';
+
+  if (wosStats && pureStats) {
+    const overlapStart = Math.max(wosStats.min, pureStats.min);
+    const overlapEnd = Math.min(wosStats.max, pureStats.max);
+
+    if (overlapStart <= overlapEnd) {
+      start = overlapStart;
+      end = overlapEnd;
+      message = `Using the overlapping year range ${start} to ${end} for both files.`;
+    } else {
+      start = Math.min(wosStats.min, pureStats.min);
+      end = Math.max(wosStats.max, pureStats.max);
+      message = 'The two files do not overlap on publication year. Choose a shared range manually if needed.';
+    }
+  } else {
+    message = `Using the available year range ${start} to ${end}.`;
+  }
+
+  setYearRangeInputs(start, end);
+  state.yearRangeMessage = message;
+  elements.yearRangeStatus.textContent = message;
+}
+
+function showYearWarning(message) {
+  state.yearWarning = message;
+  elements.yearWarning.textContent = message;
+  elements.yearWarning.classList.remove('hidden');
+}
+
+function hideYearWarning() {
+  state.yearWarning = '';
+  elements.yearWarning.textContent = '';
+  elements.yearWarning.classList.add('hidden');
 }
 
 function parseBibText(file) {
@@ -432,8 +537,9 @@ function getPureTitle(row) {
 }
 
 function buildComparisonData() {
-  const wosRecords = deduplicateRecords(state.wosRows, ['doi', 'ut', 'title']);
-  const pureRecords = deduplicateRecords(state.pureRows, ['doi', 'title']);
+  const yearRange = getSelectedYearRange();
+  const wosRecords = applyYearRangeFilter(deduplicateRecords(state.wosRows, ['doi', 'ut', 'title']), yearRange);
+  const pureRecords = applyYearRangeFilter(deduplicateRecords(state.pureRows, ['doi', 'title']), yearRange);
 
   const filteredWos = filterWosAffiliations(wosRecords);
 
@@ -537,6 +643,11 @@ function buildComparisonData() {
 
   state.matchResults = results;
   state.summary = { totalWos, filtered, matched, missing, review, excluded };
+  if (yearRange) {
+    elements.yearRangeStatus.textContent = `Filtering both files from ${yearRange.start} to ${yearRange.end}.`;
+  } else {
+    elements.yearRangeStatus.textContent = '';
+  }
   renderSummary();
   renderTabs();
   renderTable();
@@ -752,23 +863,8 @@ function compareAndRender() {
     return;
   }
 
-  const wosYears = state.wosRows
-    .map((row) => Number.parseInt(String(row.year || '').replace(/[^0-9]/g, ''), 10))
-    .filter((year) => Number.isInteger(year));
-  const pureYears = state.pureRows
-    .map((row) => Number.parseInt(String(row.year || '').replace(/[^0-9]/g, ''), 10))
-    .filter((year) => Number.isInteger(year));
-
-  const overlap = [...new Set(wosYears.filter((year) => pureYears.includes(year)))];
-  if (!overlap.length) {
-    state.yearWarning = 'Warning: the two files do not overlap on publication year. Please confirm they are filtered to the same year range.';
-    elements.yearWarning.textContent = state.yearWarning;
-    elements.yearWarning.classList.remove('hidden');
-  } else {
-    state.yearWarning = '';
-    elements.yearWarning.textContent = '';
-    elements.yearWarning.classList.add('hidden');
-  }
+  syncDefaultYearRange();
+  hideYearWarning();
 
   buildComparisonData();
 }
@@ -859,6 +955,32 @@ function wireEvents() {
     const file = event.target.files[0];
     if (!file) return;
     parseUploadedFile(file, 'pure');
+  });
+
+  elements.yearRangeStart.addEventListener('input', () => {
+    state.yearRangeDirty = true;
+  });
+
+  elements.yearRangeEnd.addEventListener('input', () => {
+    state.yearRangeDirty = true;
+  });
+
+  elements.applyYearRangeBtn.addEventListener('click', () => {
+    state.yearRangeDirty = true;
+    const selectedRange = getSelectedYearRange();
+    if (!selectedRange) {
+      showYearWarning('Enter both a start year and an end year before applying the filter.');
+      return;
+    }
+    hideYearWarning();
+    compareAndRender();
+  });
+
+  elements.resetYearRangeBtn.addEventListener('click', () => {
+    state.yearRangeDirty = false;
+    hideYearWarning();
+    syncDefaultYearRange();
+    compareAndRender();
   });
 
   elements.searchInput.addEventListener('input', (event) => {

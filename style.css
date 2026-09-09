@@ -78,6 +78,53 @@ h1 {
   margin-top: 16px;
 }
 
+.year-range-panel {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: linear-gradient(180deg, #f9fbff 0%, #ffffff 100%);
+  display: grid;
+  gap: 12px;
+}
+
+.year-range-copy h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.year-range-copy p,
+.year-range-status {
+  margin-bottom: 0;
+}
+
+.year-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+}
+
+.year-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.year-input span {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.year-input input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  min-width: 120px;
+}
+
 .upload-box {
   display: flex;
   flex-direction: column;
@@ -194,7 +241,8 @@ h1 {
 }
 
 .tab-btn,
-.primary-btn {
+.primary-btn,
+.secondary-btn {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 9px 12px;
@@ -213,6 +261,15 @@ h1 {
   background: var(--primary);
   color: #fff;
   border-color: var(--primary);
+}
+
+.secondary-btn {
+  background: #fff;
+}
+
+.secondary-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary-dark);
 }
 
 .search-box {

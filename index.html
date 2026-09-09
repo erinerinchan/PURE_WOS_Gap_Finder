@@ -34,6 +34,26 @@
             </label>
           </div>
 
+          <div class="year-range-panel">
+            <div class="year-range-copy">
+              <h3>Shared year range</h3>
+              <p class="helper-text">Applies the same publication-year filter to both files before matching.</p>
+            </div>
+            <div class="year-range-controls">
+              <label class="year-input">
+                <span>From</span>
+                <input id="yearRangeStart" type="number" inputmode="numeric" min="0" placeholder="2020" />
+              </label>
+              <label class="year-input">
+                <span>To</span>
+                <input id="yearRangeEnd" type="number" inputmode="numeric" min="0" placeholder="2024" />
+              </label>
+              <button id="applyYearRangeBtn" class="secondary-btn" type="button">Apply year range</button>
+              <button id="resetYearRangeBtn" class="secondary-btn" type="button">Reset</button>
+            </div>
+            <p id="yearRangeStatus" class="helper-text year-range-status"></p>
+          </div>
+
           <div id="yearWarning" class="warning hidden"></div>
 
           <div id="columnMapping" class="mapping-panel hidden"></div>
@@ -47,7 +67,7 @@
               <strong id="totalWosCount">0</strong>
             </article>
             <article class="summary-card">
-              <span class="label">Kept after affiliation filtering</span>
+              <span class="label">Kept after year + affiliation filtering</span>
               <strong id="filteredWosCount">0</strong>
             </article>
             <article class="summary-card">
