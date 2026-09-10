@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PURE vs WoS Gap Finder</title>
     <link rel="stylesheet" href="style.css" />
+    <script src="xlsx.full.min.js"></script>
     <script type="module" src="main.js"></script>
   </head>
   <body>
@@ -35,6 +36,11 @@
           </div>
 
           <div id="yearWarning" class="warning hidden"></div>
+
+          <details id="debugPanel" class="debug-panel" open>
+            <summary>Debug details</summary>
+            <pre id="debugOutput">Waiting for uploads...</pre>
+          </details>
 
           <div id="columnMapping" class="mapping-panel hidden"></div>
         </section>

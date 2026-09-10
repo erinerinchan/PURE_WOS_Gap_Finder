@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PURE vs WoS Gap Finder</title>
-    <script type="module" crossorigin src="./assets/index-CVUPjzsl.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CHuv2ZGz.css">
+    <title>PURE vs WoS Gap Finder</title>
+    <script src="xlsx.full.min.js"></script>
+    <script type="module" crossorigin src="./assets/index-DJXqHDxN.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CZYdc1lY.css">
   </head>
   <body>
     <div class="app-shell">
@@ -35,6 +36,11 @@
           </div>
 
           <div id="yearWarning" class="warning hidden"></div>
+
+          <details id="debugPanel" class="debug-panel" open>
+            <summary>Debug details</summary>
+            <pre id="debugOutput">Waiting for uploads...</pre>
+          </details>
 
           <div id="columnMapping" class="mapping-panel hidden"></div>
         </section>
