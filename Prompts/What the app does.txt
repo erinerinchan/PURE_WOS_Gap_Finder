@@ -1,0 +1,19 @@
+## What the app does
+
+I used GitHub Copilot to create this web app: https://erinerinchan.github.io/PURE_WOS_Gap_Finder/, which compares a WOS export against a PURE export and identifies which WOS publications are missing from PURE
+
+It:
+- accepts WOS and PURE files in BibTeX, CSV, or XLSX format
+- auto-detects likely column names, with manual mapping if needed
+- filters WOS records by HKUST-affiliation rules
+- removes duplicates before comparing
+- matches records by:
+
+  1. DOI
+  2. exact title
+  3. fuzzy title similarity for manual review
+
+- shows summary counts and a filtered results table
+- lets users review Missing, Needs review, Matched, and Excluded records
+- exports the missing-record list to an Excel file for batch import
+

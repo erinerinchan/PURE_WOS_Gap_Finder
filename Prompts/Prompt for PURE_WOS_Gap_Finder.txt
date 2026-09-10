@@ -1,0 +1,50 @@
+Role
+
+You are a full-stack developer building an internal tool for a university research information team. The team manages research output records in Elsevier's PURE system and needs to identify Web of Science (WoS) records that are missing from PURE.
+
+Task
+
+Build a single-page web app that compares two user-uploaded Excel files and reports which WoS records are not found in PURE.
+
+Inputs
+
+The user uploads two .xlsx files, both pre-filtered to the same publication year:
+
+WOS.xlsx — exported from Web of Science. Relevant columns include: Author Full Names, Article Title, Source Title, DOI, Publication Year, Addresses / Affiliations, UT (Unique WOS ID).
+PURE.xlsx — exported from PURE. Relevant columns include: Title of the contribution in original language, Subtitle of the contribution in original language, DOI, Journal, Publication Year.
+The app should not hard-code column positions — detect columns by header name, and let the user manually map columns via dropdowns if auto-detection fails.
+
+Step 1 — Affiliation filtering (WoS records)
+
+Split the affiliations column by the semicolon (;) separator and evaluate each affiliated institution individually:
+
+Keep records affiliated with "Hong Kong University of Science & Technology".
+Keep records where "Hong Kong University of Science & Technology" appears together with "Hong Kong University of Science & Technology (Guangzhou)".
+Remove records affiliated solely with "Hong Kong University of Science & Technology (Guangzhou)".
+Remove records with no affiliation containing "Hong Kong University of Science & Technology".
+Matching should be case-insensitive and tolerant of minor variants (e.g., "Hong Kong Univ Sci Technol", "HKUST"), but must never treat the Guangzhou campus as the main campus.
+
+Step 2 — Record matching (WoS vs. PURE)
+
+For each remaining WoS record, determine whether it exists in PURE using this cascade:
+
+DOI match (primary): normalize DOIs — lowercase, strip https://doi.org/, doi: prefixes, and whitespace — then compare exactly.
+Title match (fallback, for records missing a DOI on either side): normalize titles (lowercase; strip punctuation, HTML/LaTeX markup, and extra whitespace; concatenate PURE title + subtitle) and compare using fuzzy matching (e.g., Levenshtein/token-set ratio ≥ a configurable threshold, default 95%).
+Records matched at fuzzy-title level (not exact) should be flagged as "needs manual review" rather than confidently matched.
+Output & presentation
+
+Display results as a dashboard with:
+
+Summary cards: total WoS records uploaded → records kept after affiliation filtering → matched in PURE → missing from PURE → needs manual review.
+A sortable, filterable results table of missing records with columns: Author(s), Title, Journal, Year, DOI (as a clickable link), WoS UT number, match status, and the reason it was flagged (e.g., "no DOI match, no title match").
+Tabs or filters to switch between: Missing, Needs review (fuzzy matches), Matched, and Excluded by affiliation rules (so users can audit the filtering).
+Export button to download the missing-records list as .xlsx, ready for batch import into PURE.
+Client-side processing only (no server upload) so no publication data leaves the browser; use a library such as SheetJS for Excel parsing.
+Edge cases to handle
+
+Duplicate rows within either file (deduplicate by DOI/UT before comparison).
+Missing/malformed DOIs.
+Encoding issues in author names and titles (accented characters, Greek letters, sub/superscripts).
+Header rows not on row 1, or extra metadata rows in exports.
+Files with mismatched years — warn the user if publication years in the two files don't overlap.
+

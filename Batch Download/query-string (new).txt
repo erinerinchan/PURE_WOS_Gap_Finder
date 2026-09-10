@@ -1,0 +1,122 @@
+Query String to search HKUST related documents.
+
+----------------------------
+Web of Science:
+----------------------------
+AD=(hk ust)
+or
+AD=(hong kong ust)
+or
+AD=((univ* sci* & Tech* same hong kong) not hong kong univ sci technol) 
+or
+AD=(hkust)
+or
+AD=(hong kong univ sci technol)
+
+----------------------------
+Scopus:
+----------------------------
+AF-ID(60008592) OR AF-ID(60111413) OR AF-ID(60082452) OR AF-ID(60122810) OR AF-ID(60112417) OR AF-ID(60135977) OR AF-ID(60199656) OR AF-ID(60118507) OR AF-ID(60199673) 
+OR AF-ID(60199675) OR AF-ID(60199674) OR AF-ID(60113352) OR AF-ID(60112621) 
+
+
+Note:
+60008592: Hong Kong University of Science and Technology
+60111413: Hong Kong University of Science and Technology, Shenzhen Research Institute
+60082452: Hong Kong University of Science and Technology William Mong Institute of Nano Science & Technology
+60122810: Guangzhou HKUST Fok Ying Tung Research Institute
+60112417: Shenzhen PKU-HKUST Medical Center
+
+60135977: XJTU-HKUST Joint School of Sustainable Development
+60199656: HKUST Business School 
+60118507: HKUST LED-FPD Technology R&D Center at Foshan
+60199673: HKUST-DIDI Joint Lab
+60199675: HKUST-DJI Joint Innovation Laboratory
+60199674: HKUST-Kaisa Joint Research Institute
+60113352: JNU-HKUST Joint Laboratory for Neuroscience Innovative Drug Research 
+60112621: PKU-HKUST Shenzhen-HongKong Institution
+
+----------------------------
+CSA:
+----------------------------
+AF=(
+    (hong kong university of science & technology) or
+    (hong kong u of science & technology) or
+    (hong kong univ of science & technology) or
+    (university of science & technology and (clear water or kowloon)) or
+    (university of science & technology hong kong) or
+    (univ of sci & tech and (hong kong or clear water or kowloon)) or
+    (hong kong ust) or
+    (hkust)
+)
+
+
+
+
+----------------------------
+SQL Query to extract data from FORS
+----------------------------
+
+SELECT
+r.[id],
+r.[ro_id],
+r.[source_id],
+r.[report_user_id],
+r.[title],
+r.[name],
+r.[vol],
+r.[year],
+r.[category],
+r.[sub_category],
+c.[sub_category_fullname],
+r.[output_type],
+r.[published],
+r.[accepted],
+r.[input_date],
+r.[report_year],
+r.[owner],
+r.[onbehalfof],
+r.[unit] AS unit_ro,
+r.[representative_pub],
+r.[source_from],
+a.[author_id],
+a.[seq],
+a.[last_name],
+a.[first_name],
+a.ust_staff,
+a.pg_student,
+a.[unit] AS unit_au,
+a.[ust_email]
+FROM ro_submitted_view r
+INNER JOIN authors_submitted_view a ON r.ro_id=a.ro_id AND
+r.source_id=a.source_id
+INNER JOIN ro_sub_category_view c ON r.sub_category=c.sub_category_id
+ORDER BY r.[ro_id],r.[id],a.[seq]
+
+Mapping from FORS subcategories to Type:
+Type              FORS subcategories
+----------        ------------------
+Book              11 Research book or monograph (author)
+Book chapter      12 Chapter in an edited book (author)
+Book              13 Textbook (author)
+Book              14 Edited book (editor)
+Article           21 Publication in refereed journal
+Article           22 Publication in policy or professional journal
+Conference paper  31 Invited conference paper
+Conference paper  32 Referred conference paper
+Conference paper  33 Other conference paper
+41      Authored play, poem, novel, story
+42      Painting, sculpture, drawing, photograph
+43      Film, video
+44      Performance and participation in exhibits
+45      Translation of other's work
+46      Engineering, architectural, graphic, designs
+47      Computer software or system
+48      Consulting or contract research report
+49      Written teaching case study or extensive note
+61      Journal editor
+62      Review of books or of software
+64      Other outputs
+8       Awards and prizes
+91      Working paper
+92      Presetation and talk

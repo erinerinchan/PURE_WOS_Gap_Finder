@@ -40,8 +40,6 @@ const state = {
 const elements = {
   wosFileInput: document.getElementById('wosFileInput'),
   pureFileInput: document.getElementById('pureFileInput'),
-  yearFilterInput: document.getElementById('yearFilterInput'),
-  yearFilterStatus: document.getElementById('yearFilterStatus'),
   columnMapping: document.getElementById('columnMapping'),
   yearWarning: document.getElementById('yearWarning'),
   exportBtn: document.getElementById('exportBtn'),
@@ -107,42 +105,6 @@ function getAcceptedFileType(fileName) {
   if (name.endsWith('.csv')) return 'csv';
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) return 'xlsx';
   return 'unsupported';
-}
-
-function parseYearFilter(value) {
-  const text = String(value ?? '').trim();
-  if (!text) {
-    return { range: null, message: '' };
-  }
-
-  const normalized = text.replace(/\s+/g, ' ');
-  const match = normalized.match(/^(\d{4})(?:\s*(?:-|–|—|to)\s*(\d{4}))?$/i);
-  if (!match) {
-    return { error: 'Enter a single year like 2020 or a range like 2020-2024.' };
-  }
-
-  const start = Number.parseInt(match[1], 10);
-  const end = match[2] ? Number.parseInt(match[2], 10) : start;
-  const low = Math.min(start, end);
-  const high = Math.max(start, end);
-
-  return {
-    range: { start: low, end: high },
-    message: low === high ? `Filtering both files to ${low}.` : `Filtering both files to ${low} to ${high}.`
-  };
-}
-
-function getSelectedYearFilter() {
-  return parseYearFilter(elements.yearFilterInput.value);
-}
-
-function applyYearRangeFilter(rows, range) {
-  if (!range) return rows;
-
-  return rows.filter((row) => {
-    const year = Number.parseInt(String(row.year || '').replace(/[^0-9]/g, ''), 10);
-    return Number.isInteger(year) && year >= range.start && year <= range.end;
-  });
 }
 
 function showYearWarning(message) {
@@ -482,19 +444,8 @@ function getPureTitle(row) {
 }
 
 function buildComparisonData() {
-  const yearFilter = getSelectedYearFilter();
-  let yearRange = yearFilter.range;
-
-  if (yearFilter.error) {
-    showYearWarning(yearFilter.error);
-    elements.yearFilterStatus.textContent = '';
-    yearRange = null;
-  } else {
-    hideYearWarning();
-    elements.yearFilterStatus.textContent = yearFilter.message || '';
-  }
-  const wosRecords = applyYearRangeFilter(deduplicateRecords(state.wosRows, ['doi', 'ut', 'title']), yearRange);
-  const pureRecords = applyYearRangeFilter(deduplicateRecords(state.pureRows, ['doi', 'title']), yearRange);
+  const wosRecords = deduplicateRecords(state.wosRows, ['doi', 'ut', 'title']);
+  const pureRecords = deduplicateRecords(state.pureRows, ['doi', 'title']);
 
   const filteredWos = filterWosAffiliations(wosRecords);
 
@@ -902,13 +853,6 @@ function wireEvents() {
     const file = event.target.files[0];
     if (!file) return;
     parseUploadedFile(file, 'pure');
-  });
-
-  elements.yearFilterInput.addEventListener('input', () => {
-    hideYearWarning();
-    if (state.wosRows.length && state.pureRows.length) {
-      compareAndRender();
-    }
   });
 
   elements.searchInput.addEventListener('input', (event) => {
