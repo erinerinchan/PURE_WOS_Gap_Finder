@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PURE vs WoS Gap Finder</title>
+    <link rel="canonical" href="https://erinerinchan.github.io/PURE_WOS_Gap_Finder/" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="xlsx.full.min.js"></script>
+    <script type="module" src="main.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Research information tool</p>
+          <h1>PURE vs WoS gap finder</h1>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="panel uploader-panel">
+          <h2>Upload source files</h2>
+
+          <div class="upload-grid">
+            <label class="upload-box">
+              <span>WOS source</span>
+              <input id="wosFileInput" type="file" accept=".bib,.bibtex,.csv,.xlsx,.xls" />
+              <small class="helper-text">Accepted: BibTeX (.bib), CSV (.csv), XLSX (.xlsx)</small>
+            </label>
+
+            <label class="upload-box">
+              <span>PURE source</span>
+              <input id="pureFileInput" type="file" accept=".bib,.bibtex,.csv,.xlsx,.xls" />
+              <small class="helper-text">Accepted: BibTeX (.bib), CSV (.csv), XLSX (.xlsx)</small>
+            </label>
+          </div>
+
+          <div id="yearWarning" class="warning hidden"></div>
+
+          <details id="debugPanel" class="debug-panel" open>
+            <summary>Debug details</summary>
+            <pre id="debugOutput">Waiting for uploads...</pre>
+          </details>
+
+          <div id="columnMapping" class="mapping-panel hidden"></div>
+        </section>
+
+        <section class="panel summary-panel">
+          <h2>Summary</h2>
+          <div class="summary-grid">
+            <article class="summary-card">
+              <span class="label">Total WoS uploaded</span>
+              <strong id="totalWosCount">0</strong>
+            </article>
+            <article class="summary-card">
+              <span class="label">Kept after affiliation filtering</span>
+              <strong id="filteredWosCount">0</strong>
+            </article>
+            <article class="summary-card">
+              <span class="label">Matched in PURE</span>
+              <strong id="matchedCount">0</strong>
+            </article>
+            <article class="summary-card">
+              <span class="label">Missing from PURE</span>
+              <strong id="missingCount">0</strong>
+            </article>
+            <article class="summary-card">
+              <span class="label">Needs manual review</span>
+              <strong id="reviewCount">0</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel results-panel">
+          <div class="results-header">
+            <h2>Results</h2>
+            <div class="toolbar">
+              <div id="tabs" class="tabs" aria-label="Results filters"></div>
+              <div class="year-select-box">
+                <label for="yearFilterSelect">Year</label>
+                <select id="yearFilterSelect" aria-label="Filter by year">
+                  <option value="all">All years</option>
+                </select>
+              </div>
+              <div class="search-box">
+                <label for="searchInput">Filter records</label>
+                <input id="searchInput" type="search" placeholder="Search title or author" />
+              </div>
+              <button id="exportBtn" class="primary-btn hidden" type="button">Export missing .xlsx</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th data-sort="author">Author(s)</th>
+                  <th data-sort="title">Title</th>
+                  <th data-sort="journal">Journal</th>
+                  <th data-sort="year">Year</th>
+                  <th data-sort="doi">DOI</th>
+                  <th data-sort="ut">WoS UT</th>
+                  <th data-sort="status">Match status</th>
+                  <th data-sort="likelihoodMissing">Likelihood Missing (%)</th>
+                  <th data-sort="reason">Reason</th>
+                  <th data-sort="trustRecommendation">Trust Recommendation</th>
+                </tr>
+              </thead>
+              <tbody id="resultsTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+  </body>
+</html>
