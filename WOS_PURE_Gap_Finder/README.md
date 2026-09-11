@@ -2,6 +2,11 @@
 
 A browser-only tool for comparing Web of Science exports with PURE data and identifying missing records.
 
+## Live deployment
+
+- Canonical URL: https://erinerinchan.github.io/PURE_WOS_Gap_Finder/
+- Alternate URL: https://pure-wos-gap-finder.vercel.app/
+
 ## Run locally
 
 Open `index.html` in a modern browser, or serve the folder with any static web server.
