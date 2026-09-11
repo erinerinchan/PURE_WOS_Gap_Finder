@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PURE vs WoS Gap Finder</title>
-    <script src="xlsx.full.min.js"></script>
-    <script type="module" crossorigin src="./assets/index-DJXqHDxN.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CZYdc1lY.css">
+    <title>PURE vs WoS Gap Finder</title>
+    <link rel="canonical" href="https://erinerinchan.github.io/PURE_WOS_Gap_Finder/" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="xlsx.full.min.js"></script>
+    <script type="module" src="main.js"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -76,6 +77,12 @@
             <h2>Results</h2>
             <div class="toolbar">
               <div id="tabs" class="tabs" aria-label="Results filters"></div>
+              <div class="year-select-box">
+                <label for="yearFilterSelect">Year</label>
+                <select id="yearFilterSelect" aria-label="Filter by year">
+                  <option value="all">All years</option>
+                </select>
+              </div>
               <div class="search-box">
                 <label for="searchInput">Filter records</label>
                 <input id="searchInput" type="search" placeholder="Search title or author" />
@@ -95,7 +102,9 @@
                   <th data-sort="doi">DOI</th>
                   <th data-sort="ut">WoS UT</th>
                   <th data-sort="status">Match status</th>
+                  <th data-sort="likelihoodMissing">Likelihood Missing (%)</th>
                   <th data-sort="reason">Reason</th>
+                  <th data-sort="trustRecommendation">Trust Recommendation</th>
                 </tr>
               </thead>
               <tbody id="resultsTableBody"></tbody>
