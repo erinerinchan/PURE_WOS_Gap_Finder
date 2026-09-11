@@ -284,6 +284,29 @@ h1 {
   gap: 6px;
 }
 
+.year-select-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.year-select-box label,
+.search-box label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.year-select-box select {
+  min-width: 150px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
 .search-box input {
   min-width: 220px;
   padding: 9px 12px;

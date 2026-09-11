@@ -9,7 +9,7 @@ const ALIAS_MAP = {
   recordType: ['document type', 'doc type', 'publication type', 'type', 'item type', 'genre'],
   affiliations: ['addresses', 'affiliations', 'address', 'institution', 'institutions'],
   ut: ['ut (unique wos id)', 'ut unique id', 'unique wos id', 'wos id', 'ut'],
-  pureTitle: ['title of the contribution in original language', 'title'],
+  pureTitle: ['title of the contribution in original language', 'article title', 'publication title', 'paper title', 'title'],
   pureSubtitle: ['subtitle of the contribution in original language', 'subtitle'],
   pureJournal: ['journal', 'source title', 'journal title', 'publication title'],
   pureYear: ['publication year', 'year'],
@@ -17,14 +17,42 @@ const ALIAS_MAP = {
 };
 
 const tabs = [
-  { key: 'missing', label: 'Missing', statusFilter: 'missing' },
-  { key: 'review', label: 'Needs review', statusFilter: 'needs_review' },
-  { key: 'matched', label: 'Matched', statusFilter: 'matched' },
-  { key: 'excluded', label: 'Excluded by affiliation rules', statusFilter: 'excluded' }
+  { key: 'missing', label: 'Missing from PURE/Scopus', statusFilter: 'missing' }
 ];
 
 const CHUNK_SIZE = 150;
 const MAX_FUZZY_CANDIDATES = 140;
+const MATCH_THRESHOLD = 97;
+const REVIEW_THRESHOLD = 90;
+const YEAR_TOLERANCE = 1;
+const AMBIGUITY_SCORE_GAP = 0.75;
+const FUZZY_PREFILTER_YEAR_DELTA = 2;
+const SCORE_MARGIN_THRESHOLD = 1.0;
+const SECOND_PASS_FUZZY_CANDIDATES = 480;
+const TITLE_MAPPING_EMPTY_RATIO_THRESHOLD = 0.4;
+const TITLE_MAPPING_AVG_LENGTH_THRESHOLD = 12;
+
+const TITLE_STOP_WORDS = new Set(['the', 'a', 'an', 'and', 'of', 'for', 'to', 'in', 'on', 'with', 'by', 'from']);
+
+const TITLE_SCORE_WEIGHTS = {
+  tokenJaccard: 0.45,
+  trigramJaccard: 0.35,
+  editSimilarity: 0.2
+};
+
+const METADATA_WEIGHTS = {
+  title: 0.78,
+  year: 0.08,
+  recordType: 0.06,
+  journal: 0.05,
+  firstAuthor: 0.03
+};
+
+const METADATA_PENALTIES = {
+  doiConflict: 8,
+  yearHardConflict: 14,
+  typeHardConflict: 16
+};
 
 const state = {
   wosHeaders: [],
@@ -40,7 +68,9 @@ const state = {
   compareRunId: 0,
   wosMapping: {},
   pureMapping: {},
-  yearWarning: ''
+  yearWarning: '',
+  selectedYearFilter: 'all',
+  availableYears: []
 };
 
 const elements = {
@@ -50,6 +80,7 @@ const elements = {
   yearWarning: document.getElementById('yearWarning'),
   debugOutput: document.getElementById('debugOutput'),
   exportBtn: document.getElementById('exportBtn'),
+  yearFilterSelect: document.getElementById('yearFilterSelect'),
   searchInput: document.getElementById('searchInput'),
   resultsTableBody: document.getElementById('resultsTableBody'),
   tabs: document.getElementById('tabs'),
@@ -66,6 +97,9 @@ function renderDebugInfo(info) {
   const lines = [
     `Parsed WOS rows: ${info.parsedWos ?? 0}`,
     `Parsed PURE rows: ${info.parsedPure ?? 0}`,
+    `Active year filter: ${info.activeYearFilter ?? 'All years'}`,
+    `Available years: ${info.availableYearsCount ?? 0}`,
+    `Rows after selected-year filter (WOS/PURE): ${info.selectedYearWos ?? 0} / ${info.selectedYearPure ?? 0}`,
     `Deduplicated WOS rows: ${info.dedupWos ?? 0}`,
     `Deduplicated PURE rows: ${info.dedupPure ?? 0}`,
     `WOS years detected: ${info.wosYears ?? 0}`,
@@ -80,6 +114,86 @@ function renderDebugInfo(info) {
     `Excluded by affiliation: ${info.affiliationExcluded ?? 0}`,
     `Matched / Missing / Review: ${info.matched ?? 0} / ${info.missing ?? 0} / ${info.review ?? 0}`
   ];
+
+  if (typeof info.doiMatchedCount === 'number') {
+    lines.push(`DOI matches: ${info.doiMatchedCount}`);
+  }
+
+  if (typeof info.stableIdMatchedCount === 'number') {
+    lines.push(`Stable-ID matches: ${info.stableIdMatchedCount}`);
+  }
+
+  if (typeof info.rescuedByFinalStrongSignal === 'number') {
+    lines.push(`Final strong-signal rescues: ${info.rescuedByFinalStrongSignal}`);
+  }
+
+  if (typeof info.missingBlockedByStrongSignal === 'number') {
+    lines.push(`Missing blocked by strong signal: ${info.missingBlockedByStrongSignal}`);
+  }
+
+  if (typeof info.doiConflictCount === 'number') {
+    lines.push(`DOI conflicts detected: ${info.doiConflictCount}`);
+  }
+
+  if (typeof info.fuzzyHighConfidenceCount === 'number') {
+    lines.push(`Fuzzy high-confidence matches: ${info.fuzzyHighConfidenceCount}`);
+  }
+
+  if (typeof info.fuzzyReviewCount === 'number') {
+    lines.push(`Fuzzy review candidates: ${info.fuzzyReviewCount}`);
+  }
+
+  if (typeof info.metadataPromotedMatched === 'number') {
+    lines.push(`Promoted to matched by metadata: ${info.metadataPromotedMatched}`);
+  }
+
+  if (typeof info.metadataDowngradedReview === 'number') {
+    lines.push(`Downgraded to review by metadata conflict: ${info.metadataDowngradedReview}`);
+  }
+
+  if (typeof info.metadataRejectedHardConflict === 'number') {
+    lines.push(`Rejected due to hard conflicts: ${info.metadataRejectedHardConflict}`);
+  }
+
+  if (typeof info.ambiguousCandidateCount === 'number') {
+    lines.push(`Ambiguous candidate cases: ${info.ambiguousCandidateCount}`);
+  }
+
+  if (typeof info.candidatesSkippedByPrefilter === 'number') {
+    lines.push(`Candidates skipped by prefilter: ${info.candidatesSkippedByPrefilter}`);
+  }
+
+  if (typeof info.forcedReviewByMargin === 'number') {
+    lines.push(`Forced to review by score margin: ${info.forcedReviewByMargin}`);
+  }
+
+  if (typeof info.forcedReviewByClaimConflict === 'number') {
+    lines.push(`Forced to review by claim conflict: ${info.forcedReviewByClaimConflict}`);
+  }
+
+  if (typeof info.exactTitleBlockedByMetadata === 'number') {
+    lines.push(`Exact-title matches blocked by metadata: ${info.exactTitleBlockedByMetadata}`);
+  }
+
+  if (typeof info.secondPassCandidatesChecked === 'number') {
+    lines.push(`Second-pass candidates checked: ${info.secondPassCandidatesChecked}`);
+  }
+
+  if (typeof info.rescuedToReviewBySecondPass === 'number') {
+    lines.push(`Rescued to review by second pass: ${info.rescuedToReviewBySecondPass}`);
+  }
+
+  if (typeof info.missingWithHighMetadataAgreement === 'number') {
+    lines.push(`Missing with high metadata agreement: ${info.missingWithHighMetadataAgreement}`);
+  }
+
+  if (typeof info.mappingQualityWarningTriggered === 'number') {
+    lines.push(`Mapping quality warning triggered: ${info.mappingQualityWarningTriggered}`);
+  }
+
+  if (typeof info.topCandidateScoreForMissing === 'number') {
+    lines.push(`Top candidate score for missing (avg): ${info.topCandidateScoreForMissing.toFixed(1)}%`);
+  }
 
   elements.debugOutput.textContent = lines.join('\n');
 }
@@ -178,12 +292,18 @@ function parseBibText(file) {
             const author = extractBibField(entry, 'author');
             const title = extractBibField(entry, 'title');
             const journal = extractBibField(entry, 'journal') || extractBibField(entry, 'booktitle');
-            const doi = extractBibField(entry, 'doi');
+            const raw = entry.replace(/\s+/g, ' ').trim();
+            const doi = extractBibField(entry, 'doi') || extractDoiCandidates(raw)[0] || '';
             const year = extractBibField(entry, 'year') || extractBibField(entry, 'date');
             const affiliations = extractBibField(entry, 'address') || extractBibField(entry, 'affiliation');
-            const ut = extractBibField(entry, 'ut') || extractBibField(entry, 'accessionnumber');
+            const stableIdFromUrl = firstStableIdCandidate(
+              extractBibField(entry, 'url'),
+              extractBibField(entry, 'eid'),
+              extractBibField(entry, 'scopusid'),
+              extractBibField(entry, 'publicationid')
+            );
+            const ut = extractBibField(entry, 'ut') || extractBibField(entry, 'accessionnumber') || stableIdFromUrl;
             const docType = normalizeBibEntryType(extractBibEntryType(entry));
-            const raw = entry.replace(/\s+/g, ' ').trim();
 
             rows.push([author || '', title || raw || '', journal || '', doi || '', year || '', affiliations || '', ut || '', docType || '']);
           });
@@ -243,12 +363,18 @@ function parseBibByLooseSplit(text) {
     const title = extractBibField(entry, 'title');
     const author = extractBibField(entry, 'author');
     const journal = extractBibField(entry, 'journal') || extractBibField(entry, 'booktitle');
-    const doi = extractBibField(entry, 'doi');
+    const raw = entry.replace(/\s+/g, ' ').trim();
+    const doi = extractBibField(entry, 'doi') || extractDoiCandidates(raw)[0] || '';
     const year = extractBibField(entry, 'year') || extractBibField(entry, 'date');
     const affiliations = extractBibField(entry, 'address') || extractBibField(entry, 'affiliation');
-    const ut = extractBibField(entry, 'ut') || extractBibField(entry, 'accessionnumber');
+    const stableIdFromUrl = firstStableIdCandidate(
+      extractBibField(entry, 'url'),
+      extractBibField(entry, 'eid'),
+      extractBibField(entry, 'scopusid'),
+      extractBibField(entry, 'publicationid')
+    );
+    const ut = extractBibField(entry, 'ut') || extractBibField(entry, 'accessionnumber') || stableIdFromUrl;
     const recordType = normalizeBibEntryType(extractBibEntryType(entry));
-    const raw = entry.replace(/\s+/g, ' ').trim();
 
     if (title || author || doi || year || journal || ut) {
       output.push({
@@ -410,6 +536,7 @@ function parseRisTaggedText(text) {
     const first = (key) => (fields.get(key)?.[0] || '');
     const many = (key) => (fields.get(key) || []).filter(Boolean);
     const typeRaw = first('TY');
+    const stableId = firstStableIdCandidate(first('UR'), first('L1'), first('L2'), first('ID'));
 
     return {
       author: many('AU').concat(many('A1')).join('; '),
@@ -418,7 +545,7 @@ function parseRisTaggedText(text) {
       doi: first('DO'),
       year: first('PY') || first('Y1') || first('DA'),
       affiliations: first('AD') || first('C1'),
-      ut: first('AN') || first('ID'),
+      ut: first('AN') || first('ID') || stableId,
       recordType: normalizeRisType(typeRaw)
     };
   }).filter((row) => row.title || row.author || row.doi || row.year);
@@ -648,6 +775,7 @@ function buildRowsFromSheet(rows, mapping, source) {
         canonical.doi = canonical.doi ?? '';
         canonical.year = canonical.pureYear ?? canonical.year ?? '';
         canonical.recordType = canonical.pureRecordType ?? canonical.recordType ?? '';
+        canonical.ut = canonical.ut ?? '';
       }
 
       return canonical;
@@ -659,12 +787,81 @@ function buildRowsFromSheet(rows, mapping, source) {
 function normalizeDoi(value) {
   if (value === null || value === undefined) return '';
   return String(value)
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/[\u2028\u2029]/g, ' ')
+    .replace(/\u00a0/g, ' ')
     .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\/doi\.org\//i, '')
+    .replace(/^(?:https?:\/\/)?(?:dx\.)?doi\.org\//i, '')
     .replace(/^doi:\s*/i, '')
+    .split('#')[0]
+    .split('?')[0]
+    .toLowerCase()
     .replace(/\s+/g, '')
-    .replace(/\u00a0/g, '');
+    .replace(/\u00a0/g, '')
+    .replace(/[.,;:\)\]\}]+$/g, '');
+}
+
+function isValidDoi(value) {
+  const doi = normalizeDoi(value);
+  return /^10\.\d{4,9}\/[\-._;()/:a-z0-9]+$/i.test(doi);
+}
+
+function extractDoiCandidates(text) {
+  const source = String(text ?? '');
+  if (!source.trim()) return [];
+
+  const pattern = /(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:\s*)?(10\.\d{4,9}\/[\-._;()/:a-z0-9]+)/gi;
+  const matches = new Set();
+  let match;
+
+  while ((match = pattern.exec(source)) !== null) {
+    const normalized = normalizeDoi(match[1]);
+    if (isValidDoi(normalized)) {
+      matches.add(normalized);
+    }
+  }
+
+  return [...matches];
+}
+
+function firstStableIdCandidate(...values) {
+  for (const value of values) {
+    const candidates = extractStableIdCandidates(String(value || ''));
+    if (candidates.length) {
+      return candidates[0];
+    }
+  }
+  return '';
+}
+
+function getRecordDoiCandidates(record) {
+  const candidates = new Set();
+  const directDoi = normalizeDoi(record?.doi);
+  if (isValidDoi(directDoi)) {
+    candidates.add(directDoi);
+  }
+
+  const freeText = [record?.doi, record?.title, record?.subtitle, record?.journal, record?.ut]
+    .filter(Boolean)
+    .join(' ');
+
+  extractDoiCandidates(freeText).forEach((doi) => candidates.add(doi));
+  return candidates;
+}
+
+function hasDoiOverlap(leftSet, rightSet) {
+  if (!leftSet?.size || !rightSet?.size) return false;
+  for (const doi of leftSet) {
+    if (rightSet.has(doi)) return true;
+  }
+  return false;
+}
+
+function hasDoiConflict(leftSet, rightSet) {
+  if (!leftSet?.size || !rightSet?.size) return false;
+  return !hasDoiOverlap(leftSet, rightSet);
 }
 
 function canonicalizeText(value) {
@@ -684,6 +881,114 @@ function canonicalizeText(value) {
 
 function getTitleKey(value) {
   return canonicalizeText(value);
+}
+
+function getStrictTitleKey(value) {
+  return canonicalizeText(value);
+}
+
+function getRelaxedTitleKey(value) {
+  return canonicalizeText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !TITLE_STOP_WORDS.has(token))
+    .join(' ');
+}
+
+function getTitleTokens(value) {
+  return new Set(
+    getRelaxedTitleKey(value)
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean)
+  );
+}
+
+function getTokenBucketKey(value, limit = 4) {
+  const tokens = [...getTitleTokens(value)].sort();
+  return tokens.slice(0, limit).join('|');
+}
+
+function normalizeStableId(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function extractStableIdCandidates(text) {
+  const source = String(text ?? '');
+  if (!source.trim()) return [];
+
+  const patterns = [
+    /\bUT\s*[:=\-]?\s*([a-z0-9:-]+)/gi,
+    /\bAN\s*[:=\-]?\s*([a-z0-9:-]+)/gi,
+    /\bEID\s*[:=\-]?\s*([a-z0-9./:-]+)/gi,
+    /\bSCOPUS(?:\s+EID)?\s*[:=\-]?\s*([a-z0-9./:-]+)/gi,
+    /scopus\.com\/pages\/publications\/([0-9]{8,})/gi,
+    /[?&]eid=([^&\s]+)/gi,
+    /\bpublication(?:\s|_)?id\s*[:=\-]?\s*([a-z0-9._:-]+)/gi,
+    /\bWOS\s*[:=\-]?\s*([a-z0-9./:-]+)/gi,
+    /\bPMID\s*[:=\-]?\s*([a-z0-9:-]+)/gi,
+    /\bISBN\s*[:=\-]?\s*([a-z0-9-]+)/gi,
+    /\b2-s2\.0-\d+(?:\.[0-9]+)?\b/gi,
+    /\bWOS:\s*[A-Z0-9]+\b/gi
+  ];
+
+  const matches = new Set();
+
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      const value = normalizeStableId(match[1] || match[0]);
+      if (value && value.length >= 6) {
+        matches.add(value);
+      }
+    }
+  });
+
+  return [...matches];
+}
+
+function getRecordStableIdCandidates(record) {
+  const candidates = new Set();
+  const directValues = [record?.ut, record?.accessionNumber, record?.accessionnumber, record?.eid, record?.scopusEid];
+  directValues.filter(Boolean).forEach((value) => candidates.add(normalizeStableId(value)));
+
+  const freeText = [record?.ut, record?.accessionNumber, record?.accessionnumber, record?.eid, record?.scopusEid, record?.title, record?.subtitle, record?.journal, record?.doi]
+    .filter(Boolean)
+    .join(' ');
+
+  extractStableIdCandidates(freeText).forEach((id) => candidates.add(id));
+  return candidates;
+}
+
+function isTitleMappingQualityPoor(rows) {
+  const titles = rows
+    .map((row) => String(row.title || '').trim())
+    .filter(Boolean);
+
+  const total = rows.length || 0;
+  const emptyRatio = total ? (total - titles.length) / total : 1;
+  const avgLength = titles.length ? titles.reduce((sum, title) => sum + title.length, 0) / titles.length : 0;
+
+  return {
+    poor: emptyRatio >= TITLE_MAPPING_EMPTY_RATIO_THRESHOLD || avgLength <= TITLE_MAPPING_AVG_LENGTH_THRESHOLD,
+    emptyRatio,
+    avgLength
+  };
+}
+
+function isHighMetadataAgreement(parts) {
+  return parts?.year === 'year exact' && parts?.recordType === 'type exact';
+}
+
+function shouldRescueLowScoreCandidate(candidate) {
+  if (!candidate || candidate.hasHardConflict || candidate.hasDoiConflict) return false;
+
+  const parts = candidate.reasonParts || {};
+  const titleScore = Number(parts.titleScore ?? 0);
+  const metadataAligned = isHighMetadataAgreement(parts);
+
+  return metadataAligned && titleScore >= 10;
 }
 
 function stripHtmlEntities(value) {
@@ -736,6 +1041,277 @@ function fuzzyTitleScoreNormalized(left, right) {
   if (maxLength === 0) return 100;
   const distance = levenshteinDistance(left, right);
   return ((maxLength - distance) / maxLength) * 100;
+}
+
+function tokenizeTitle(text) {
+  const tokens = canonicalizeText(text)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
+  return new Set(tokens);
+}
+
+function jaccardSimilarity(setA, setB) {
+  if (!setA?.size && !setB?.size) return 1;
+  if (!setA?.size || !setB?.size) return 0;
+
+  let intersection = 0;
+  const [small, large] = setA.size <= setB.size ? [setA, setB] : [setB, setA];
+  for (const item of small) {
+    if (large.has(item)) intersection += 1;
+  }
+
+  const union = setA.size + setB.size - intersection;
+  return union ? intersection / union : 0;
+}
+
+function trigramSet(text) {
+  const normalized = canonicalizeText(text).replace(/\s+/g, ' ').trim();
+  const compact = normalized.replace(/\s/g, '');
+  if (compact.length < 3) {
+    return new Set(compact ? [compact] : []);
+  }
+
+  const set = new Set();
+  for (let i = 0; i <= compact.length - 3; i += 1) {
+    set.add(compact.slice(i, i + 3));
+  }
+  return set;
+}
+
+function weightedTitleScore(leftKey, rightKey) {
+  if (!leftKey || !rightKey) return 0;
+
+  const tokenScore = jaccardSimilarity(tokenizeTitle(leftKey), tokenizeTitle(rightKey)) * 100;
+  const trigramScore = jaccardSimilarity(trigramSet(leftKey), trigramSet(rightKey)) * 100;
+  const editScore = fuzzyTitleScoreNormalized(leftKey, rightKey);
+
+  return (tokenScore * TITLE_SCORE_WEIGHTS.tokenJaccard)
+    + (trigramScore * TITLE_SCORE_WEIGHTS.trigramJaccard)
+    + (editScore * TITLE_SCORE_WEIGHTS.editSimilarity);
+}
+
+function clampScore(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function getFirstAuthorToken(value) {
+  const firstAuthor = String(value ?? '')
+    .split(';')[0]
+    .split(',')[0]
+    .trim();
+
+  if (!firstAuthor) return '';
+
+  const normalized = canonicalizeText(firstAuthor)
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+
+  return normalized[0] || '';
+}
+
+function scoreFirstAuthorOverlap(wosAuthor, pureAuthor) {
+  const left = getFirstAuthorToken(wosAuthor);
+  const right = getFirstAuthorToken(pureAuthor);
+
+  if (!left || !right) {
+    return { score: 50, label: 'author missing' };
+  }
+
+  if (left === right) {
+    return { score: 100, label: 'first author match' };
+  }
+
+  return { score: 15, label: 'first author mismatch' };
+}
+
+function isHardTypeConflict(wosType, pureType) {
+  if (!wosType || !pureType || wosType === pureType) return false;
+
+  const archivalTypes = new Set(['thesis', 'book', 'book chapter']);
+  const articleTypes = new Set(['journal article', 'conference paper', 'preprint']);
+
+  const leftArchival = archivalTypes.has(wosType);
+  const rightArchival = archivalTypes.has(pureType);
+  const leftArticle = articleTypes.has(wosType);
+  const rightArticle = articleTypes.has(pureType);
+
+  return (leftArchival && rightArticle) || (rightArchival && leftArticle);
+}
+
+function getRecordTypeFamily(value) {
+  const type = normalizeRecordType(value);
+  if (!type) return '';
+
+  if (type === 'journal article' || type === 'conference paper' || type === 'preprint') {
+    return 'article_like';
+  }
+
+  if (type === 'thesis' || type === 'book' || type === 'book chapter') {
+    return 'long_form';
+  }
+
+  return 'other';
+}
+
+function areTypeFamiliesCompatible(leftType, rightType) {
+  const leftFamily = getRecordTypeFamily(leftType);
+  const rightFamily = getRecordTypeFamily(rightType);
+
+  if (!leftFamily || !rightFamily) return true;
+  if (leftFamily === 'other' || rightFamily === 'other') return true;
+  return leftFamily === rightFamily;
+}
+
+function passesFuzzyPrefilter(record, candidateRow) {
+  const wosYear = parseYearValue(record.year);
+  const pureYear = parseYearValue(candidateRow.year);
+  const yearCompatible = !Number.isInteger(wosYear)
+    || !Number.isInteger(pureYear)
+    || Math.abs(wosYear - pureYear) <= FUZZY_PREFILTER_YEAR_DELTA;
+
+  const typeCompatible = areTypeFamiliesCompatible(record.recordType, candidateRow.recordType);
+
+  return {
+    pass: yearCompatible && typeCompatible,
+    yearCompatible,
+    typeCompatible
+  };
+}
+
+function scoreYearAgreement(wosYear, pureYear) {
+  if (!Number.isInteger(wosYear) || !Number.isInteger(pureYear)) {
+    return { score: 50, label: 'year missing', hardConflict: false };
+  }
+
+  const delta = Math.abs(wosYear - pureYear);
+  if (delta === 0) {
+    return { score: 100, label: 'year exact', hardConflict: false };
+  }
+
+  if (delta <= YEAR_TOLERANCE) {
+    return { score: 72, label: `year near (Δ${delta})`, hardConflict: false };
+  }
+
+  return { score: 0, label: `year mismatch (${wosYear} vs ${pureYear})`, hardConflict: true };
+}
+
+function scoreTypeAgreement(wosType, pureType) {
+  if (!wosType || !pureType) {
+    return { score: 50, label: 'type missing', hardConflict: false };
+  }
+
+  if (wosType === pureType) {
+    return { score: 100, label: 'type exact', hardConflict: false };
+  }
+
+  if (isHardTypeConflict(wosType, pureType)) {
+    return { score: 0, label: `type mismatch (${wosType} vs ${pureType})`, hardConflict: true };
+  }
+
+  return { score: 32, label: `type weak (${wosType} vs ${pureType})`, hardConflict: false };
+}
+
+function scoreJournalAgreement(wosJournal, pureJournal) {
+  const left = getTitleKey(wosJournal || '');
+  const right = getTitleKey(pureJournal || '');
+
+  if (!left || !right) {
+    return { score: 50, label: 'journal missing' };
+  }
+
+  const score = weightedTitleScore(left, right);
+  if (score >= 95) return { score, label: 'journal exact' };
+  if (score >= 80) return { score, label: 'journal strong' };
+  if (score >= 60) return { score, label: 'journal moderate' };
+  return { score, label: 'journal weak' };
+}
+
+function computeMetadataConfidence({ record, candidateRow, titleScore, hasDoiConflict }) {
+  const wosYear = parseYearValue(record.year);
+  const pureYear = parseYearValue(candidateRow.year);
+  const year = scoreYearAgreement(wosYear, pureYear);
+
+  const wosType = normalizeRecordType(record.recordType);
+  const pureType = normalizeRecordType(candidateRow.recordType);
+  const recordType = scoreTypeAgreement(wosType, pureType);
+  const journal = scoreJournalAgreement(record.journal, candidateRow.journal);
+  const firstAuthor = scoreFirstAuthorOverlap(record.author, candidateRow.author);
+
+  let confidence = (titleScore * METADATA_WEIGHTS.title)
+    + (year.score * METADATA_WEIGHTS.year)
+    + (recordType.score * METADATA_WEIGHTS.recordType)
+    + (journal.score * METADATA_WEIGHTS.journal)
+    + (firstAuthor.score * METADATA_WEIGHTS.firstAuthor);
+
+  if (hasDoiConflict) {
+    confidence -= METADATA_PENALTIES.doiConflict;
+  }
+
+  if (year.hardConflict) {
+    confidence -= METADATA_PENALTIES.yearHardConflict;
+  }
+
+  if (recordType.hardConflict) {
+    confidence -= METADATA_PENALTIES.typeHardConflict;
+  }
+
+  const hasHardConflict = year.hardConflict || recordType.hardConflict;
+  const strongConflict = (year.hardConflict && recordType.hardConflict) || (hasDoiConflict && hasHardConflict);
+
+  return {
+    confidence: clampScore(confidence),
+    hasHardConflict,
+    strongConflict,
+    hasDoiConflict,
+    parts: {
+      titleScore,
+      year: year.label,
+      recordType: recordType.label,
+      journal: journal.label,
+      firstAuthor: firstAuthor.label
+    }
+  };
+}
+
+function buildReasonFromMetadata(parts, confidence, suffix = '') {
+  const base = `title ${parts.titleScore.toFixed(1)}%, ${parts.year}, ${parts.recordType}, ${parts.journal}, ${parts.firstAuthor}, confidence ${confidence.toFixed(1)}%`;
+  return suffix ? `${base}, ${suffix}` : base;
+}
+
+function formatScoreMargin(bestScore, secondScore) {
+  if (!Number.isFinite(bestScore) || !Number.isFinite(secondScore)) {
+    return 'score margin unavailable';
+  }
+
+  const delta = bestScore - secondScore;
+  return `top ${bestScore.toFixed(1)}%, second ${secondScore.toFixed(1)}%, delta ${delta.toFixed(1)}%`;
+}
+
+function computeMissingLikelihood(score, reason) {
+  const numericScore = Number.isFinite(score) ? score : 0;
+
+  if (/no DOI match, no title match/i.test(reason || '')) {
+    return 98;
+  }
+
+  if (/no fuzzy candidates/i.test(reason || '')) {
+    return 94;
+  }
+
+  if (/hard conflict/i.test(reason || '')) {
+    return 90;
+  }
+
+  return clampScore(100 - numericScore);
+}
+
+function buildMissingAssessment(score, reason) {
+  const likelihoodMissing = Math.round(computeMissingLikelihood(score, reason));
+  const trustRecommendation = likelihoodMissing >= 80 ? 'Yes' : 'No';
+
+  return { likelihoodMissing, trustRecommendation };
 }
 
 function nextUiTick() {
@@ -857,6 +1433,66 @@ function getYearSet(rows) {
   );
 }
 
+function getAvailableYears(wosRows, pureRows) {
+  const years = new Set();
+
+  [...wosRows, ...pureRows].forEach((row) => {
+    const year = parseYearValue(row?.year);
+    if (Number.isInteger(year)) {
+      years.add(year);
+    }
+  });
+
+  return [...years].sort((a, b) => b - a);
+}
+
+function refreshYearFilterOptions() {
+  if (!elements.yearFilterSelect) return;
+
+  const years = getAvailableYears(state.wosRows, state.pureRows);
+  state.availableYears = years;
+
+  if (state.selectedYearFilter !== 'all') {
+    const selectedYear = Number.parseInt(state.selectedYearFilter, 10);
+    if (!years.includes(selectedYear)) {
+      state.selectedYearFilter = 'all';
+    }
+  }
+
+  const optionsHtml = ['<option value="all">All years</option>']
+    .concat(years.map((year) => `<option value="${year}">${year}</option>`))
+    .join('');
+
+  elements.yearFilterSelect.innerHTML = optionsHtml;
+  elements.yearFilterSelect.value = state.selectedYearFilter;
+  elements.yearFilterSelect.disabled = !years.length;
+}
+
+function getRowsForSelectedYearFilter() {
+  if (state.selectedYearFilter === 'all') {
+    return {
+      wosRows: [...state.wosRows],
+      pureRows: [...state.pureRows],
+      label: 'All years'
+    };
+  }
+
+  const selectedYear = Number.parseInt(state.selectedYearFilter, 10);
+  if (!Number.isInteger(selectedYear)) {
+    return {
+      wosRows: [...state.wosRows],
+      pureRows: [...state.pureRows],
+      label: 'All years'
+    };
+  }
+
+  return {
+    wosRows: state.wosRows.filter((row) => parseYearValue(row.year) === selectedYear),
+    pureRows: state.pureRows.filter((row) => parseYearValue(row.year) === selectedYear),
+    label: String(selectedYear)
+  };
+}
+
 function normalizeRecordType(value) {
   const raw = canonicalizeText(value || '');
   if (!raw) return '';
@@ -924,13 +1560,19 @@ function autoAlignDatasets(wosRows, pureRows) {
 
   if (wosYears.size && pureYears.size) {
     if (sharedYears.size) {
-      alignedWos = alignedWos.filter((row) => sharedYears.has(parseYearValue(row.year)));
-      alignedPure = alignedPure.filter((row) => sharedYears.has(parseYearValue(row.year)));
+      alignedWos = alignedWos.filter((row) => {
+        const year = parseYearValue(row.year);
+        return !Number.isInteger(year) || sharedYears.has(year);
+      });
+      alignedPure = alignedPure.filter((row) => {
+        const year = parseYearValue(row.year);
+        return !Number.isInteger(year) || sharedYears.has(year);
+      });
 
       const sortedYears = [...sharedYears].sort((a, b) => a - b);
-      notes.push(`Auto-year filter applied: ${sortedYears[0]}-${sortedYears[sortedYears.length - 1]} (${sharedYears.size} shared year(s)).`);
+      notes.push(`Auto-year candidate narrowing applied: ${sortedYears[0]}-${sortedYears[sortedYears.length - 1]} (${sharedYears.size} shared year(s)). Comparison still runs across uploaded records.`);
     } else {
-      notes.push('No overlapping publication years found between WOS and PURE, so year filtering was skipped.');
+      notes.push('No overlapping publication years found between WOS and PURE; year-based candidate narrowing was skipped and comparison still runs across uploaded records.');
     }
   }
 
@@ -946,17 +1588,17 @@ function autoAlignDatasets(wosRows, pureRows) {
   if (sharedTypesResult.comparable && sharedTypesResult.overlap && sharedTypesResult.overlap.size) {
     alignedWos = alignedWos.filter((row) => {
       const type = normalizeRecordType(row.recordType);
-      return type && sharedTypesResult.overlap.has(type);
+      return !type || sharedTypesResult.overlap.has(type);
     });
 
     alignedPure = alignedPure.filter((row) => {
       const type = normalizeRecordType(row.recordType);
-      return type && sharedTypesResult.overlap.has(type);
+      return !type || sharedTypesResult.overlap.has(type);
     });
 
-    notes.push(`Auto-type filter applied: ${sharedTypesResult.overlap.size} shared type(s).`);
+    notes.push(`Auto-type candidate narrowing applied: ${sharedTypesResult.overlap.size} shared type(s).`);
   } else if (sharedTypesResult.comparable) {
-    notes.push('No overlapping record types found between WOS and PURE, so type filtering was skipped.');
+    notes.push('No overlapping record types found between WOS and PURE; type-based candidate narrowing was skipped.');
   }
 
   meta.sharedTypes = sharedTypesResult.overlap?.size || 0;
@@ -970,8 +1612,8 @@ function getPureTitle(row) {
   return [row.title, row.subtitle].filter(Boolean).join(' ').trim();
 }
 
-function createTitleBucketKey(titleKey, yearValue) {
-  const prefix = String(titleKey || '').slice(0, 18);
+function createTitleBucketKey(titleKey, yearValue, prefixLength = 18) {
+  const prefix = String(titleKey || '').slice(0, prefixLength);
   const lengthBucket = Math.floor(String(titleKey || '').length / 10);
   const yearPart = Number.isInteger(yearValue) ? String(yearValue) : 'na';
   return `${yearPart}|${prefix}|${lengthBucket}`;
@@ -980,32 +1622,65 @@ function createTitleBucketKey(titleKey, yearValue) {
 function buildPureLookup(pureRows) {
   const byDoi = new Map();
   const byExactTitle = new Map();
+  const byRelaxedTitle = new Map();
   const byBucket = new Map();
+  const byShortBucket = new Map();
+  const byTokenBucket = new Map();
+  const byStableId = new Map();
   const allTitleRecords = [];
+  const byRowDoiCandidates = new Map();
 
   pureRows.forEach((row) => {
-    const doi = normalizeDoi(row.doi);
+    const doiCandidates = getRecordDoiCandidates(row);
     const title = getPureTitle(row);
-    const titleKey = getTitleKey(title);
+    const strictTitleKey = getStrictTitleKey(title);
+    const relaxedTitleKey = getRelaxedTitleKey(title);
     const yearValue = parseYearValue(row.year);
+    const shortPrefixKey = createTitleBucketKey(relaxedTitleKey, yearValue, 12);
+    const tokenBucketKey = getTokenBucketKey(title);
+    const stableIdCandidates = getRecordStableIdCandidates(row);
 
-    if (doi && !byDoi.has(doi)) {
-      byDoi.set(doi, row);
+    byRowDoiCandidates.set(row, doiCandidates);
+
+    stableIdCandidates.forEach((id) => {
+      if (!byStableId.has(id)) {
+        byStableId.set(id, row);
+      }
+    });
+
+    doiCandidates.forEach((doi) => {
+      if (!byDoi.has(doi)) {
+        byDoi.set(doi, row);
+      }
+    });
+
+    if (strictTitleKey && !byExactTitle.has(strictTitleKey)) {
+      byExactTitle.set(strictTitleKey, row);
     }
 
-    if (titleKey && !byExactTitle.has(titleKey)) {
-      byExactTitle.set(titleKey, row);
+    if (relaxedTitleKey && !byRelaxedTitle.has(relaxedTitleKey)) {
+      byRelaxedTitle.set(relaxedTitleKey, row);
     }
 
-    if (!titleKey) {
+    if (shortPrefixKey) {
+      if (!byShortBucket.has(shortPrefixKey)) byShortBucket.set(shortPrefixKey, []);
+      byShortBucket.get(shortPrefixKey).push({ row, title, strictTitleKey, relaxedTitleKey, yearValue, doiCandidates, stableIdCandidates, tokenBucketKey, shortPrefixKey });
+    }
+
+    if (tokenBucketKey) {
+      if (!byTokenBucket.has(tokenBucketKey)) byTokenBucket.set(tokenBucketKey, []);
+      byTokenBucket.get(tokenBucketKey).push({ row, title, strictTitleKey, relaxedTitleKey, yearValue, doiCandidates, stableIdCandidates, tokenBucketKey, shortPrefixKey });
+    }
+
+    if (!relaxedTitleKey) {
       return;
     }
 
-    const titleRecord = { row, title, titleKey, yearValue };
+    const titleRecord = { row, title, strictTitleKey, relaxedTitleKey, yearValue, doiCandidates, stableIdCandidates, tokenBucketKey, shortPrefixKey };
     allTitleRecords.push(titleRecord);
 
-    const bucketKeyExactYear = createTitleBucketKey(titleKey, yearValue);
-    const bucketKeyAnyYear = createTitleBucketKey(titleKey, null);
+    const bucketKeyExactYear = createTitleBucketKey(relaxedTitleKey, yearValue);
+    const bucketKeyAnyYear = createTitleBucketKey(relaxedTitleKey, null);
 
     if (!byBucket.has(bucketKeyExactYear)) byBucket.set(bucketKeyExactYear, []);
     if (!byBucket.has(bucketKeyAnyYear)) byBucket.set(bucketKeyAnyYear, []);
@@ -1014,44 +1689,99 @@ function buildPureLookup(pureRows) {
     byBucket.get(bucketKeyAnyYear).push(titleRecord);
   });
 
-  return { byDoi, byExactTitle, byBucket, allTitleRecords };
+  return { byDoi, byExactTitle, byRelaxedTitle, byBucket, byShortBucket, byTokenBucket, byStableId, allTitleRecords, byRowDoiCandidates };
 }
 
-function getFuzzyCandidates(lookup, wosTitleKey, wosYear) {
+function getFuzzyCandidates(lookup, wosTitleKey, wosYear, options = {}) {
   if (!wosTitleKey) return [];
+
+  const isSecondPass = !!options.secondPass;
+  const maxCandidates = isSecondPass ? SECOND_PASS_FUZZY_CANDIDATES : MAX_FUZZY_CANDIDATES;
+  const shortPrefixLength = isSecondPass ? 12 : 18;
 
   const primaryKey = createTitleBucketKey(wosTitleKey, wosYear);
   const fallbackKey = createTitleBucketKey(wosTitleKey, null);
   const primary = lookup.byBucket.get(primaryKey) || [];
   const fallback = lookup.byBucket.get(fallbackKey) || [];
+  const shortPrefixKey = createTitleBucketKey(wosTitleKey, wosYear, shortPrefixLength);
+  const shortPrefixFallbackKey = createTitleBucketKey(wosTitleKey, null, shortPrefixLength);
+  const shortPrefixCandidates = isSecondPass
+    ? [
+      ...(lookup.byShortBucket.get(shortPrefixKey) || []),
+      ...(lookup.byShortBucket.get(shortPrefixFallbackKey) || [])
+    ]
+    : [];
+  const tokenBucketKey = getTokenBucketKey(wosTitleKey);
+  const tokenCandidates = isSecondPass ? (lookup.byTokenBucket.get(tokenBucketKey) || []) : [];
+  const relaxedKey = getRelaxedTitleKey(wosTitleKey);
+  const relaxedCandidates = isSecondPass ? (lookup.byRelaxedTitle.get(relaxedKey) ? [{ row: lookup.byRelaxedTitle.get(relaxedKey), relaxedTitleKey: relaxedKey }] : []) : [];
 
-  const merged = [...primary, ...fallback];
+  const merged = [...primary, ...fallback, ...shortPrefixCandidates, ...tokenCandidates, ...relaxedCandidates];
   if (!merged.length) {
-    return lookup.allTitleRecords.slice(0, Math.min(MAX_FUZZY_CANDIDATES, lookup.allTitleRecords.length));
+    return lookup.allTitleRecords.slice(0, Math.min(maxCandidates, lookup.allTitleRecords.length));
   }
 
   const dedup = [];
   const seen = new Set();
   merged.forEach((candidate) => {
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
+    const key = candidate?.row || candidate;
+    if (seen.has(key)) return;
+    seen.add(key);
     dedup.push(candidate);
   });
 
-  if (dedup.length <= MAX_FUZZY_CANDIDATES) {
+  if (dedup.length <= maxCandidates) {
     return dedup;
   }
 
   return dedup
-    .sort((a, b) => Math.abs(a.titleKey.length - wosTitleKey.length) - Math.abs(b.titleKey.length - wosTitleKey.length))
-    .slice(0, MAX_FUZZY_CANDIDATES);
+    .sort((a, b) => {
+      const aKey = a.relaxedTitleKey || a.strictTitleKey || getRelaxedTitleKey(a.title || '');
+      const bKey = b.relaxedTitleKey || b.strictTitleKey || getRelaxedTitleKey(b.title || '');
+      return Math.abs(aKey.length - wosTitleKey.length) - Math.abs(bKey.length - wosTitleKey.length);
+    })
+    .slice(0, maxCandidates);
 }
 
-async function buildComparisonData(runId) {
-  const wosRecords = deduplicateRecords(state.wosRows, ['doi', 'ut', 'title']);
-  const pureRecords = deduplicateRecords(state.pureRows, ['doi', 'title']);
+function evaluateCandidateMatch(record, candidateData, wosDoiCandidates, options = {}) {
+  const row = candidateData.row || candidateData;
+  const titleKey = candidateData.relaxedTitleKey || candidateData.strictTitleKey || getRelaxedTitleKey(candidateData.title || row.title || '');
+  if (!titleKey) return null;
+
+  const doiCandidates = candidateData.doiCandidates || getRecordDoiCandidates(row);
+  const stableIdCandidates = candidateData.stableIdCandidates || getRecordStableIdCandidates(row);
+  const hasConflict = hasDoiConflict(wosDoiCandidates, doiCandidates);
+  const hasStableIdOverlap = hasDoiOverlap(new Set(Array.from(getRecordStableIdCandidates(record))), new Set(stableIdCandidates));
+  const titleScore = weightedTitleScore(getTitleKey(record.title || ''), titleKey);
+  const metadata = computeMetadataConfidence({
+    record,
+    candidateRow: row,
+    titleScore,
+    hasDoiConflict: hasConflict
+  });
+
+  return {
+    row,
+    titleScore,
+    finalScore: metadata.confidence,
+    hasDoiConflict: metadata.hasDoiConflict,
+    hasHardConflict: metadata.hasHardConflict,
+    strongConflict: metadata.strongConflict,
+    reasonParts: metadata.parts,
+    hasStableIdOverlap,
+    secondPassEligible: !!options.secondPassEligible
+  };
+}
+
+function getSecondPassCandidates(lookup, wosTitleKey, wosYear) {
+  const candidates = getFuzzyCandidates(lookup, wosTitleKey, wosYear, { secondPass: true });
+  return candidates.slice(0, SECOND_PASS_FUZZY_CANDIDATES);
+}
+
+async function buildComparisonData(runId, inputWosRows = state.wosRows, inputPureRows = state.pureRows, yearFilterMeta = {}) {
+  const wosRecords = deduplicateRecords(inputWosRows, ['doi', 'ut', 'title']);
+  const pureRecords = deduplicateRecords(inputPureRows, ['doi', 'ut', 'title']);
   const aligned = autoAlignDatasets(wosRecords, pureRecords);
-  const alignedWos = aligned.wosRows;
   const alignedPure = aligned.pureRows;
 
   if (aligned.notes.length) {
@@ -1060,8 +1790,152 @@ async function buildComparisonData(runId) {
     hideYearWarning();
   }
 
-  const filteredWos = filterWosAffiliations(alignedWos);
-  const lookup = buildPureLookup(alignedPure);
+  const filteredWos = filterWosAffiliations(wosRecords);
+  const fullLookup = buildPureLookup(pureRecords);
+  const alignedLookup = buildPureLookup(alignedPure);
+  const titleMappingQuality = isTitleMappingQualityPoor(alignedPure);
+  let doiMatchedCount = 0;
+  let stableIdMatchedCount = 0;
+  let rescuedByFinalStrongSignal = 0;
+  let missingBlockedByStrongSignal = 0;
+  let doiConflictCount = 0;
+  let fuzzyHighConfidenceCount = 0;
+  let fuzzyReviewCount = 0;
+  let metadataPromotedMatched = 0;
+  let metadataDowngradedReview = 0;
+  let metadataRejectedHardConflict = 0;
+  let ambiguousCandidateCount = 0;
+  let candidatesSkippedByPrefilter = 0;
+  let forcedReviewByMargin = 0;
+  let forcedReviewByClaimConflict = 0;
+  let exactTitleBlockedByMetadata = 0;
+  let secondPassCandidatesChecked = 0;
+  let rescuedToReviewBySecondPass = 0;
+  let missingWithHighMetadataAgreement = 0;
+  let mappingQualityWarningTriggered = 0;
+  let topCandidateScoreForMissingTotal = 0;
+  let topCandidateScoreForMissingCount = 0;
+  const pureClaims = new Map();
+
+  if (titleMappingQuality.poor) {
+    mappingQualityWarningTriggered = 1;
+    showYearWarning(`Mapping quality warning: ${Math.round(titleMappingQuality.emptyRatio * 100)}% of PURE titles are empty or the average title length is only ${titleMappingQuality.avgLength.toFixed(1)} characters.`);
+  }
+
+  function finalizeMissing(record, reasonText, score, metadataAgreement = false, wosDoiCandidates = new Set(), wosStableIdCandidates = new Set()) {
+    let recordJson = '';
+    try {
+      recordJson = JSON.stringify(record) || '';
+    } catch (error) {
+      recordJson = '';
+    }
+
+    const emergencyText = [record?.doi, record?.title, record?.journal, record?.ut, recordJson]
+      .filter(Boolean)
+      .join(' ');
+
+    const emergencyDoiCandidates = new Set(wosDoiCandidates);
+    extractDoiCandidates(emergencyText).forEach((doi) => emergencyDoiCandidates.add(doi));
+
+    for (const doi of emergencyDoiCandidates) {
+      const emergencyDoiMatch = fullLookup.byDoi.get(doi);
+      if (!emergencyDoiMatch) continue;
+
+      rescuedByFinalStrongSignal += 1;
+      if (pureClaims.has(emergencyDoiMatch)) {
+        forcedReviewByClaimConflict += 1;
+        const claim = pureClaims.get(emergencyDoiMatch);
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `final strong-signal rescue by DOI (${doi}) found claimed PURE record (${claim.score.toFixed(1)}%), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: emergencyDoiMatch,
+          score: claim.score
+        });
+        return;
+      }
+
+      pureClaims.set(emergencyDoiMatch, { score: 100, via: 'final_doi_rescue' });
+      doiMatchedCount += 1;
+      results.push({
+        ...record,
+        status: 'matched',
+        reason: `final strong-signal rescue by DOI (${doi})`,
+        matchStatus: 'Matched',
+        pureMatch: emergencyDoiMatch,
+        score: 100
+      });
+      return;
+    }
+
+    const emergencyStableIdCandidates = new Set(wosStableIdCandidates);
+    extractStableIdCandidates(emergencyText).forEach((id) => emergencyStableIdCandidates.add(id));
+
+    for (const stableId of emergencyStableIdCandidates) {
+      const emergencyStableIdMatch = fullLookup.byStableId.get(stableId);
+      if (!emergencyStableIdMatch) continue;
+
+      rescuedByFinalStrongSignal += 1;
+      const stableDoiConflict = hasDoiConflict(emergencyDoiCandidates, fullLookup.byRowDoiCandidates.get(emergencyStableIdMatch) || new Set());
+
+      if (pureClaims.has(emergencyStableIdMatch)) {
+        forcedReviewByClaimConflict += 1;
+        const claim = pureClaims.get(emergencyStableIdMatch);
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `final strong-signal rescue by stable identifier (${stableId}) found claimed PURE record (${claim.score.toFixed(1)}%), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: emergencyStableIdMatch,
+          score: claim.score
+        });
+        return;
+      }
+
+      if (stableDoiConflict) {
+        doiConflictCount += 1;
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `final strong-signal rescue by stable identifier (${stableId}) with DOI conflict, sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: emergencyStableIdMatch,
+          score: 99
+        });
+        return;
+      }
+
+      pureClaims.set(emergencyStableIdMatch, { score: 100, via: 'final_stable_id_rescue' });
+      stableIdMatchedCount += 1;
+      results.push({
+        ...record,
+        status: 'matched',
+        reason: `final strong-signal rescue by stable identifier (${stableId})`,
+        matchStatus: 'Matched',
+        pureMatch: emergencyStableIdMatch,
+        score: 100
+      });
+      return;
+    }
+
+    const missingAssessment = buildMissingAssessment(score, reasonText);
+    if (metadataAgreement) {
+      missingWithHighMetadataAgreement += 1;
+      missingAssessment.trustRecommendation = 'No';
+    }
+    topCandidateScoreForMissingTotal += Number.isFinite(score) ? score : 0;
+    topCandidateScoreForMissingCount += 1;
+    results.push({
+      ...record,
+      status: 'missing',
+      reason: reasonText,
+      matchStatus: 'Missing',
+      pureMatch: null,
+      score,
+      ...missingAssessment
+    });
+  }
 
   const results = [];
   for (let index = 0; index < filteredWos.length; index += 1) {
@@ -1070,7 +1944,8 @@ async function buildComparisonData(runId) {
     }
 
     const record = filteredWos[index];
-    const doi = normalizeDoi(record.doi || '');
+    const wosDoiCandidates = getRecordDoiCandidates(record);
+    const wosStableIdCandidates = getRecordStableIdCandidates(record);
     const wosTitle = record.title || '';
     const normalizedWosTitle = getTitleKey(wosTitle);
     const wosYearValue = parseYearValue(record.year);
@@ -1091,8 +1966,32 @@ async function buildComparisonData(runId) {
       continue;
     }
 
-    const pureMatchByDoi = doi ? lookup.byDoi.get(doi) : null;
+    let pureMatchByDoi = null;
+    for (const doi of wosDoiCandidates) {
+      const candidateMatch = fullLookup.byDoi.get(doi);
+      if (candidateMatch) {
+        pureMatchByDoi = candidateMatch;
+        break;
+      }
+    }
+
     if (pureMatchByDoi) {
+      if (pureClaims.has(pureMatchByDoi)) {
+        forcedReviewByClaimConflict += 1;
+        const claim = pureClaims.get(pureMatchByDoi);
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `DOI matched but PURE record already claimed (${claim.score.toFixed(1)}%), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: pureMatchByDoi,
+          score: claim.score
+        });
+        continue;
+      }
+
+      pureClaims.set(pureMatchByDoi, { score: 100, via: 'doi' });
+      doiMatchedCount += 1;
       status = 'matched';
       reason = 'DOI matched';
       results.push({
@@ -1105,52 +2004,359 @@ async function buildComparisonData(runId) {
       continue;
     }
 
-    const exactTitleMatch = normalizedWosTitle ? lookup.byExactTitle.get(normalizedWosTitle) : null;
+    let pureMatchByStableId = null;
+    for (const stableId of wosStableIdCandidates) {
+      const candidateMatch = fullLookup.byStableId.get(stableId);
+      if (candidateMatch) {
+        pureMatchByStableId = candidateMatch;
+        break;
+      }
+    }
+
+    if (pureMatchByStableId) {
+      const pureStableIds = getRecordStableIdCandidates(pureMatchByStableId);
+      const stableDoiConflict = hasDoiConflict(wosDoiCandidates, fullLookup.byRowDoiCandidates.get(pureMatchByStableId) || new Set());
+
+      if (pureClaims.has(pureMatchByStableId)) {
+        forcedReviewByClaimConflict += 1;
+        const claim = pureClaims.get(pureMatchByStableId);
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `stable identifier matched but PURE record already claimed (${claim.score.toFixed(1)}%), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: pureMatchByStableId,
+          score: claim.score
+        });
+        continue;
+      }
+
+      if (stableDoiConflict) {
+        doiConflictCount += 1;
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: 'stable identifier overlap found but DOI conflict detected, sent to review',
+          matchStatus: 'Needs review',
+          pureMatch: pureMatchByStableId,
+          score: 99
+        });
+        continue;
+      }
+
+      if (!hasDoiOverlap(wosStableIdCandidates, pureStableIds)) {
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: 'stable identifier candidate found, sent to review',
+          matchStatus: 'Needs review',
+          pureMatch: pureMatchByStableId,
+          score: 99
+        });
+        continue;
+      }
+
+      pureClaims.set(pureMatchByStableId, { score: 100, via: 'stable_id' });
+      stableIdMatchedCount += 1;
+      results.push({
+        ...record,
+        status: 'matched',
+        reason: 'stable identifier matched',
+        matchStatus: 'Matched',
+        pureMatch: pureMatchByStableId
+      });
+      continue;
+    }
+
+    const exactTitleMatch = normalizedWosTitle ? fullLookup.byExactTitle.get(normalizedWosTitle) : null;
     if (exactTitleMatch) {
+      const exactMatchDoiCandidates = fullLookup.byRowDoiCandidates.get(exactTitleMatch) || new Set();
+      const exactMatchDoiConflict = hasDoiConflict(wosDoiCandidates, exactMatchDoiCandidates);
+      const exactYear = scoreYearAgreement(parseYearValue(record.year), parseYearValue(exactTitleMatch.year));
+      const exactType = scoreTypeAgreement(normalizeRecordType(record.recordType), normalizeRecordType(exactTitleMatch.recordType));
+      const exactStrongMetadataConflict = exactYear.hardConflict || exactType.hardConflict;
+
+      if (exactMatchDoiConflict) {
+        doiConflictCount += 1;
+      }
+
+      if (exactStrongMetadataConflict) {
+        exactTitleBlockedByMetadata += 1;
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `exact title matched but metadata conflict (${exactYear.label}; ${exactType.label}), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: exactTitleMatch
+        });
+        continue;
+      }
+
+      if (!exactMatchDoiConflict) {
+        if (pureClaims.has(exactTitleMatch)) {
+          forcedReviewByClaimConflict += 1;
+          const claim = pureClaims.get(exactTitleMatch);
+          results.push({
+            ...record,
+            status: 'needs_review',
+            reason: `exact title matched but PURE record already claimed (${claim.score.toFixed(1)}%), sent to review`,
+            matchStatus: 'Needs review',
+            pureMatch: exactTitleMatch,
+            score: claim.score
+          });
+          continue;
+        }
+
+        pureClaims.set(exactTitleMatch, { score: 99, via: 'exact_title' });
+        status = 'matched';
+        reason = 'title matched exactly';
+        results.push({
+          ...record,
+          status,
+          reason,
+          matchStatus: 'Matched',
+          pureMatch: exactTitleMatch
+        });
+        continue;
+      }
+
+      reason = 'exact title matched but DOI conflict found';
+    }
+
+    const relaxedTitleKey = getRelaxedTitleKey(wosTitle);
+    const relaxedTitleMatch = relaxedTitleKey ? fullLookup.byRelaxedTitle.get(relaxedTitleKey) : null;
+    if (relaxedTitleMatch) {
+      const relaxedMatchDoiCandidates = fullLookup.byRowDoiCandidates.get(relaxedTitleMatch) || new Set();
+      const relaxedMatchDoiConflict = hasDoiConflict(wosDoiCandidates, relaxedMatchDoiCandidates);
+      const relaxedYear = scoreYearAgreement(parseYearValue(record.year), parseYearValue(relaxedTitleMatch.year));
+      const relaxedType = scoreTypeAgreement(normalizeRecordType(record.recordType), normalizeRecordType(relaxedTitleMatch.recordType));
+      const relaxedMetadataConsistent = !relaxedMatchDoiConflict && isHighMetadataAgreement({ year: relaxedYear.label, recordType: relaxedType.label });
+
+      if (relaxedMatchDoiConflict) {
+        doiConflictCount += 1;
+      }
+
+      if (relaxedMetadataConsistent) {
+        if (pureClaims.has(relaxedTitleMatch)) {
+          forcedReviewByClaimConflict += 1;
+          const claim = pureClaims.get(relaxedTitleMatch);
+          results.push({
+            ...record,
+            status: 'needs_review',
+            reason: `normalized title matched and metadata aligned, but PURE record already claimed (${claim.score.toFixed(1)}%), sent to review`,
+            matchStatus: 'Needs review',
+            pureMatch: relaxedTitleMatch,
+            score: claim.score
+          });
+          continue;
+        }
+
+        pureClaims.set(relaxedTitleMatch, { score: 98, via: 'relaxed_title' });
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `normalized title matched with aligned metadata (${relaxedYear.label}; ${relaxedType.label}), sent to review`,
+          matchStatus: 'Needs review',
+          pureMatch: relaxedTitleMatch,
+          score: 98
+        });
+        continue;
+      }
+
+    }
+
+    const evaluatedCandidates = [];
+
+    const candidates = getFuzzyCandidates(alignedLookup, normalizedWosTitle, wosYearValue);
+    candidates.forEach((candidateData) => {
+      const row = candidateData.row || candidateData;
+      if (!row) return;
+
+      const prefilter = passesFuzzyPrefilter(record, row);
+      if (!prefilter.pass) {
+        candidatesSkippedByPrefilter += 1;
+        return;
+      }
+
+      const evaluated = evaluateCandidateMatch(record, candidateData, wosDoiCandidates);
+      if (evaluated) {
+        evaluatedCandidates.push(evaluated);
+      }
+    });
+
+    evaluatedCandidates.sort((a, b) => b.finalScore - a.finalScore);
+    const bestMatch = evaluatedCandidates[0] || null;
+    const secondBest = evaluatedCandidates[1] || null;
+    const scoreDelta = bestMatch && secondBest ? bestMatch.finalScore - secondBest.finalScore : Number.POSITIVE_INFINITY;
+    const isAmbiguous = !!(
+      bestMatch
+      && secondBest
+      && bestMatch.finalScore >= REVIEW_THRESHOLD
+      && secondBest.finalScore >= REVIEW_THRESHOLD
+      && Math.abs(bestMatch.finalScore - secondBest.finalScore) <= AMBIGUITY_SCORE_GAP
+    );
+    const isLowMargin = !!(
+      bestMatch
+      && secondBest
+      && bestMatch.finalScore >= REVIEW_THRESHOLD
+      && scoreDelta < SCORE_MARGIN_THRESHOLD
+    );
+
+    if (bestMatch && bestMatch.hasDoiConflict) {
+      doiConflictCount += 1;
+    }
+
+    if (bestMatch && bestMatch.strongConflict) {
+      metadataRejectedHardConflict += 1;
+      const reasonText = buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'hard conflict, rejected');
+      finalizeMissing(record, reasonText, bestMatch.finalScore, isHighMetadataAgreement(bestMatch.reasonParts), wosDoiCandidates, wosStableIdCandidates);
+    } else if (bestMatch && isLowMargin) {
+      forcedReviewByMargin += 1;
+      fuzzyReviewCount += 1;
+      results.push({
+        ...record,
+        status: 'needs_review',
+        reason: `${buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'low score margin, sent to review')} (${formatScoreMargin(bestMatch.finalScore, secondBest.finalScore)})`,
+        matchStatus: 'Needs review',
+        pureMatch: bestMatch.row,
+        score: bestMatch.finalScore
+      });
+    } else if (bestMatch && isAmbiguous) {
+      ambiguousCandidateCount += 1;
+      fuzzyReviewCount += 1;
+      results.push({
+        ...record,
+        status: 'needs_review',
+        reason: buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, `ambiguous with close candidate (${secondBest.finalScore.toFixed(1)}%)`),
+        matchStatus: 'Needs review',
+        pureMatch: bestMatch.row,
+        score: bestMatch.finalScore
+      });
+    } else if (bestMatch && bestMatch.finalScore >= MATCH_THRESHOLD && !bestMatch.hasHardConflict && !bestMatch.hasDoiConflict) {
+      if (pureClaims.has(bestMatch.row)) {
+        forcedReviewByClaimConflict += 1;
+        const claim = pureClaims.get(bestMatch.row);
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: `${buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'PURE record already claimed, sent to review')} (${formatScoreMargin(bestMatch.finalScore, secondBest?.finalScore ?? 0)}; claimed ${claim.score.toFixed(1)}%)`,
+          matchStatus: 'Needs review',
+          pureMatch: bestMatch.row,
+          score: bestMatch.finalScore
+        });
+        continue;
+      }
+
+      pureClaims.set(bestMatch.row, { score: bestMatch.finalScore, via: 'fuzzy' });
+      fuzzyHighConfidenceCount += 1;
+      metadataPromotedMatched += 1;
       status = 'matched';
-      reason = 'title matched exactly';
+      reason = buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'auto-matched');
       results.push({
         ...record,
         status,
         reason,
         matchStatus: 'Matched',
-        pureMatch: exactTitleMatch
+        pureMatch: bestMatch.row,
+        score: bestMatch.finalScore
       });
-      continue;
-    }
-
-    let bestMatch = null;
-    let bestScore = 0;
-
-    const candidates = getFuzzyCandidates(lookup, normalizedWosTitle, wosYearValue);
-    candidates.forEach(({ title, titleKey, row }) => {
-      if (!titleKey) return;
-      const similarity = fuzzyTitleScoreNormalized(normalizedWosTitle, titleKey);
-      if (similarity > bestScore) {
-        bestScore = similarity;
-        bestMatch = { row, similarity };
+    } else if (bestMatch && bestMatch.finalScore >= REVIEW_THRESHOLD) {
+      fuzzyReviewCount += 1;
+      if (bestMatch.hasHardConflict || bestMatch.hasDoiConflict) {
+        metadataDowngradedReview += 1;
       }
-    });
 
-    if (bestMatch && bestMatch.similarity >= state.titleThreshold) {
       status = 'needs_review';
-      reason = `fuzzy title match (${bestMatch.similarity.toFixed(1)}%) needs review`;
+      reason = buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, bestMatch.hasDoiConflict ? 'DOI conflict, sent to review' : 'sent to review');
       results.push({
         ...record,
         status,
         reason,
         matchStatus: 'Needs review',
         pureMatch: bestMatch.row,
-        score: bestMatch.similarity
+        score: bestMatch.finalScore
       });
+    } else if (bestMatch && bestMatch.hasHardConflict) {
+      metadataRejectedHardConflict += 1;
+      const reasonText = buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'hard conflict, below threshold');
+      finalizeMissing(record, reasonText, bestMatch.finalScore, isHighMetadataAgreement(bestMatch.reasonParts), wosDoiCandidates, wosStableIdCandidates);
     } else {
-      results.push({
-        ...record,
-        status,
-        reason,
-        matchStatus: 'Missing',
-        pureMatch: null
-      });
+      let reasonText = bestMatch
+        ? buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'below review threshold')
+        : (candidates.length ? reason : 'no fuzzy candidates available');
+      let finalScore = bestMatch ? bestMatch.finalScore : 0;
+
+      if (!bestMatch || finalScore < REVIEW_THRESHOLD) {
+        const secondPassCandidates = getSecondPassCandidates(alignedLookup, normalizedWosTitle, wosYearValue);
+        secondPassCandidatesChecked += secondPassCandidates.length;
+
+        const secondPassEvaluated = [];
+        secondPassCandidates.forEach((candidateData) => {
+          const row = candidateData.row || candidateData;
+          if (!row) return;
+
+          const evaluated = evaluateCandidateMatch(record, candidateData, wosDoiCandidates, { secondPassEligible: true });
+          if (!evaluated) return;
+
+          const relaxedPrefilter = passesFuzzyPrefilter(record, row);
+          if (!relaxedPrefilter.pass && !evaluated.hasStableIdOverlap) {
+            return;
+          }
+
+          secondPassEvaluated.push(evaluated);
+        });
+
+        secondPassEvaluated.sort((a, b) => b.finalScore - a.finalScore);
+        const rescueCandidate = secondPassEvaluated[0] || null;
+
+        if (rescueCandidate && rescueCandidate.finalScore >= REVIEW_THRESHOLD) {
+          rescuedToReviewBySecondPass += 1;
+          fuzzyReviewCount += 1;
+          results.push({
+            ...record,
+            status: 'needs_review',
+            reason: buildReasonFromMetadata(rescueCandidate.reasonParts, rescueCandidate.finalScore, 'second-pass rescue, sent to review'),
+            matchStatus: 'Needs review',
+            pureMatch: rescueCandidate.row,
+            score: rescueCandidate.finalScore
+          });
+          continue;
+        }
+
+        if (rescueCandidate && shouldRescueLowScoreCandidate(rescueCandidate)) {
+          rescuedToReviewBySecondPass += 1;
+          fuzzyReviewCount += 1;
+          results.push({
+            ...record,
+            status: 'needs_review',
+            reason: buildReasonFromMetadata(rescueCandidate.reasonParts, rescueCandidate.finalScore, 'metadata-aligned second-pass rescue, sent to review'),
+            matchStatus: 'Needs review',
+            pureMatch: rescueCandidate.row,
+            score: rescueCandidate.finalScore
+          });
+          continue;
+        }
+
+        if (rescueCandidate) {
+          reasonText = buildReasonFromMetadata(rescueCandidate.reasonParts, rescueCandidate.finalScore, 'second-pass candidate found, still below threshold');
+          finalScore = rescueCandidate.finalScore;
+        }
+      }
+
+      if (bestMatch && shouldRescueLowScoreCandidate(bestMatch)) {
+        fuzzyReviewCount += 1;
+        results.push({
+          ...record,
+          status: 'needs_review',
+          reason: buildReasonFromMetadata(bestMatch.reasonParts, bestMatch.finalScore, 'metadata-aligned low-score rescue, sent to review'),
+          matchStatus: 'Needs review',
+          pureMatch: bestMatch.row,
+          score: bestMatch.finalScore
+        });
+        continue;
+      }
+
+      finalizeMissing(record, reasonText, finalScore, !!bestMatch && isHighMetadataAgreement(bestMatch.reasonParts), wosDoiCandidates, wosStableIdCandidates);
     }
 
     if ((index + 1) % CHUNK_SIZE === 0) {
@@ -1163,7 +2369,7 @@ async function buildComparisonData(runId) {
     return;
   }
 
-  const totalWos = alignedWos.length;
+  const totalWos = wosRecords.length;
   const filtered = filteredWos.filter((record) => record.affiliationStatus === 'kept').length;
   const affiliationExcluded = filteredWos.filter((record) => record.affiliationStatus === 'excluded').length;
   const matched = results.filter((record) => record.status === 'matched' && record.affiliationStatus !== 'excluded').length;
@@ -1174,6 +2380,10 @@ async function buildComparisonData(runId) {
   renderDebugInfo({
     parsedWos: state.wosRows.length,
     parsedPure: state.pureRows.length,
+    activeYearFilter: yearFilterMeta.activeYearFilter || 'All years',
+    availableYearsCount: state.availableYears.length,
+    selectedYearWos: Number.isInteger(yearFilterMeta.selectedYearWos) ? yearFilterMeta.selectedYearWos : state.wosRows.length,
+    selectedYearPure: Number.isInteger(yearFilterMeta.selectedYearPure) ? yearFilterMeta.selectedYearPure : state.pureRows.length,
     dedupWos: wosRecords.length,
     dedupPure: pureRecords.length,
     wosYears: aligned.meta.wosYears,
@@ -1190,10 +2400,31 @@ async function buildComparisonData(runId) {
     affiliationExcluded,
     matched,
     missing,
-    review
+    review,
+    doiMatchedCount,
+    stableIdMatchedCount,
+    rescuedByFinalStrongSignal,
+    missingBlockedByStrongSignal,
+    doiConflictCount,
+    fuzzyHighConfidenceCount,
+    fuzzyReviewCount,
+    metadataPromotedMatched,
+    metadataDowngradedReview,
+    metadataRejectedHardConflict,
+    ambiguousCandidateCount,
+    candidatesSkippedByPrefilter,
+    forcedReviewByMargin,
+    forcedReviewByClaimConflict,
+    exactTitleBlockedByMetadata
+    ,secondPassCandidatesChecked,
+    rescuedToReviewBySecondPass,
+    missingWithHighMetadataAgreement,
+    mappingQualityWarningTriggered,
+    topCandidateScoreForMissing: topCandidateScoreForMissingCount ? topCandidateScoreForMissingTotal / topCandidateScoreForMissingCount : 0
   });
 
-  state.matchResults = results;
+  // Results table should only show records present in WoS but missing in PURE/Scopus source set.
+  state.matchResults = results.filter((record) => record.status === 'missing');
   state.summary = { totalWos, filtered, matched, missing, review, excluded };
   if (aligned.notes.length) {
     showYearWarning(aligned.notes.join(' '));
@@ -1236,7 +2467,7 @@ function renderTabs() {
 }
 
 function renderTable() {
-  const activeStatus = tabs.find((tab) => tab.key === state.selectedTab)?.statusFilter || 'missing';
+  const activeStatus = 'missing';
   const search = state.searchText.trim().toLowerCase();
 
   const missingCount = state.matchResults.filter((record) => record.status === 'missing').length;
@@ -1244,12 +2475,18 @@ function renderTable() {
 
   const filteredRows = state.matchResults.filter((record) => {
     const statusMatch = record.status === activeStatus;
-    const haystack = `${record.author || ''} ${record.title || ''} ${record.journal || ''} ${record.year || ''} ${record.doi || ''} ${record.ut || ''} ${record.matchStatus || ''} ${record.reason || ''}`.toLowerCase();
+    const haystack = `${record.author || ''} ${record.title || ''} ${record.journal || ''} ${record.year || ''} ${record.doi || ''} ${record.ut || ''} ${record.matchStatus || ''} ${record.reason || ''} ${record.likelihoodMissing ?? ''} ${record.trustRecommendation || ''}`.toLowerCase();
     const matchesSearch = !search || haystack.includes(search);
     return statusMatch && matchesSearch;
   });
 
   const sortedRows = [...filteredRows].sort((a, b) => {
+    if (state.sortKey === 'likelihoodMissing') {
+      const left = Number(a.likelihoodMissing ?? 0);
+      const right = Number(b.likelihoodMissing ?? 0);
+      return state.sortDir === 'asc' ? left - right : right - left;
+    }
+
     const left = String(a[state.sortKey] ?? '').toLowerCase();
     const right = String(b[state.sortKey] ?? '').toLowerCase();
     if (left === right) return 0;
@@ -1257,7 +2494,7 @@ function renderTable() {
   });
 
   if (!sortedRows.length) {
-    elements.resultsTableBody.innerHTML = '<tr><td colspan="8" class="empty-state">No records match the active filter.</td></tr>';
+    elements.resultsTableBody.innerHTML = '<tr><td colspan="10" class="empty-state">No records match the active filter.</td></tr>';
     return;
   }
 
@@ -1276,7 +2513,9 @@ function renderTable() {
           <td>${doi}</td>
           <td>${escapeHtml(row.ut || '—')}</td>
           <td><span class="status-badge ${statusClass}">${badgeLabel}</span></td>
+          <td>${escapeHtml(String(row.likelihoodMissing ?? 0))}%</td>
           <td>${escapeHtml(row.reason || '—')}</td>
+          <td>${escapeHtml(row.trustRecommendation || 'No')}</td>
         </tr>
       `;
     })
@@ -1409,28 +2648,46 @@ function applySelectedMappings() {
     journal: row.journal || '',
     doi: row.doi || '',
     year: row.year || '',
-    recordType: row.recordType || ''
+    recordType: row.recordType || '',
+    ut: row.ut || ''
   }));
+
+  refreshYearFilterOptions();
 
   compareAndRender();
 }
 
 async function compareAndRender() {
+  refreshYearFilterOptions();
+
   if (!state.wosRows.length || !state.pureRows.length) {
     const wosCount = state.wosRows.length;
     const pureCount = state.pureRows.length;
     showYearWarning(`Waiting for comparable data. Parsed WOS: ${wosCount}, PURE: ${pureCount}.`);
-    renderDebugInfo({ parsedWos: wosCount, parsedPure: pureCount });
+    renderDebugInfo({
+      parsedWos: wosCount,
+      parsedPure: pureCount,
+      activeYearFilter: state.selectedYearFilter === 'all' ? 'All years' : state.selectedYearFilter,
+      availableYearsCount: state.availableYears.length,
+      selectedYearWos: 0,
+      selectedYearPure: 0
+    });
     state.summary = { totalWos: wosCount, filtered: 0, matched: 0, missing: 0, review: 0, excluded: 0 };
     renderSummary();
     return;
   }
 
+  const selectedYearRows = getRowsForSelectedYearFilter();
+
   const runId = state.compareRunId + 1;
   state.compareRunId = runId;
-  showYearWarning('Preparing comparison...');
+  showYearWarning(`Preparing comparison for ${selectedYearRows.label}...`);
   await nextUiTick();
-  await buildComparisonData(runId);
+  await buildComparisonData(runId, selectedYearRows.wosRows, selectedYearRows.pureRows, {
+    activeYearFilter: selectedYearRows.label,
+    selectedYearWos: selectedYearRows.wosRows.length,
+    selectedYearPure: selectedYearRows.pureRows.length
+  });
 }
 
 function parseUploadedFile(file, source) {
@@ -1483,7 +2740,8 @@ function parseUploadedFile(file, source) {
         journal: row.journal || '',
         doi: row.doi || '',
         year: row.year || '',
-        recordType: row.recordType || ''
+        recordType: row.recordType || '',
+        ut: row.ut || ''
       };
     });
 
@@ -1492,6 +2750,8 @@ function parseUploadedFile(file, source) {
     } else {
       state.pureRows = parsed;
     }
+
+    refreshYearFilterOptions();
 
     if (!parsed.length) {
       showYearWarning(`No records were parsed from ${file.name}. Please verify the file content and format.`);
@@ -1552,6 +2812,13 @@ function wireEvents() {
     renderTable();
   });
 
+  if (elements.yearFilterSelect) {
+    elements.yearFilterSelect.addEventListener('change', (event) => {
+      state.selectedYearFilter = event.target.value || 'all';
+      compareAndRender();
+    });
+  }
+
   elements.exportBtn.addEventListener('click', exportMissingRows);
 }
 
@@ -1563,7 +2830,8 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   renderTabs();
   renderSummary();
-  renderDebugInfo({ parsedWos: 0, parsedPure: 0 });
+  refreshYearFilterOptions();
+  renderDebugInfo({ parsedWos: 0, parsedPure: 0, activeYearFilter: 'All years', availableYearsCount: 0, selectedYearWos: 0, selectedYearPure: 0 });
 
   // If the browser preserved file selections across reload, parse them immediately.
   const wosFile = elements.wosFileInput.files?.[0];
